@@ -45,11 +45,13 @@ AGENCY_SEARCH_TERMS: dict[str, list[str]] = {
 }
 
 # IT/보안 관련 키워드 (검색 결과 필터링)
+# "지침", "기준", "가이드"는 범용적이라 모든 행정규칙에 매칭되므로 제외
 RELEVANCE_KEYWORDS = [
     "정보보호", "정보보안", "개인정보", "사이버", "보안",
     "소프트웨어", "전자정부", "클라우드", "인공지능", "데이터",
     "전자금융", "핀테크", "암호", "인증", "접근통제",
-    "가이드", "지침", "기준", "안전성", "보호조치",
+    "정보통신", "전자서명", "전자문서", "망분리", "정보시스템",
+    "주요정보통신기반", "통신비밀", "스팸", "이용자보호",
 ]
 
 # DRF API 설정
@@ -131,8 +133,11 @@ async def search_admin_rules(
                     if not title:
                         continue
 
-                    # IT/보안 관련성 체크
-                    if not any(kw in title for kw in RELEVANCE_KEYWORDS):
+                    # IT/보안 관련성 체크 (기관명 제거 후 — 기관명 자체에 키워드 포함 가능)
+                    title_for_check = title
+                    for agency_term in search_terms:
+                        title_for_check = title_for_check.replace(agency_term, "")
+                    if not any(kw in title_for_check for kw in RELEVANCE_KEYWORDS):
                         continue
 
                     # 중복 체크 (행정규칙일련번호 기준)
@@ -180,6 +185,46 @@ async def search_admin_rules(
                 break
 
     return items
+
+
+async def crawl_admin_rules(agency_code: str) -> "CrawlResult":
+    """법제처 API 크롤링 결과를 CrawlResult(CrawledItem) 형태로 반환합니다.
+
+    기존 BBS/RSS 크롤러와 동일한 파이프라인(sync_crawl_results)에
+    투입될 수 있도록 CrawledItem으로 변환합니다.
+    """
+    from datetime import datetime
+    from app.crawlers.base import CrawledItem, CrawlResult
+
+    started = datetime.now()
+
+    try:
+        rules = await search_admin_rules(agency_code, max_results=50)
+    except Exception as e:
+        return CrawlResult(
+            agency_code=agency_code,
+            config_label="법제처 행정규칙",
+            started_at=started,
+            finished_at=datetime.now(),
+            error=str(e),
+        )
+
+    items = [
+        CrawledItem(
+            title=rule.title,
+            url=rule.source_url,
+            published_date=rule.promulgation_date or rule.enforcement_date,
+        )
+        for rule in rules
+    ]
+
+    return CrawlResult(
+        agency_code=agency_code,
+        config_label="법제처 행정규칙",
+        started_at=started,
+        finished_at=datetime.now(),
+        items=items,
+    )
 
 
 async def fetch_and_store_legal_bases(

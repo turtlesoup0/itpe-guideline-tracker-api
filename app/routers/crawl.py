@@ -78,8 +78,11 @@ async def _run_config(config: CrawlConfig, agency_code: str) -> CrawlResult:
             keyword_filter=keyword_list,
             config_label=config.label,
         )
+    elif config.source_type == CrawlSourceType.LAW_API:
+        from app.crawlers.law_api import crawl_admin_rules
+
+        return await crawl_admin_rules(agency_code)
     else:
-        # LAW_API는 별도 구현 예정
         return CrawlResult(
             agency_code=agency_code,
             config_label=config.label,

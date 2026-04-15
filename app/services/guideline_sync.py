@@ -156,6 +156,58 @@ def is_guideline_title(title: str) -> bool:
     return result is True
 
 
+# ── 카테고리 자동분류 ──────────────────────────────────
+
+
+_CATEGORY_RULES: list[tuple[re.Pattern, "GuidelineCategory"]] = []
+
+
+def _build_category_rules() -> list[tuple[re.Pattern, "GuidelineCategory"]]:
+    """카테고리 분류 규칙 (우선순위 순서, 먼저 매칭되면 확정)."""
+    from app.models.guideline import GuidelineCategory as GC
+
+    return [
+        # AI (가장 먼저 — AI 키워드가 다른 도메인과 겹치는 경우 우선)
+        (re.compile(r"인공지능|AI\b|자율주행|로봇|드론|지능정보|LLM|생성형|메타버스", re.I), GC.AI),
+        # 개인정보
+        (re.compile(r"개인정보|프라이버시|가명정보|가명.*익명|영상정보|CCTV|생체정보|마이데이터|CPO|위치정보|접근배제|정보주체"), GC.PRIVACY),
+        # 정보보안
+        (re.compile(
+            r"정보보호|정보보안|사이버|보안모델|취약점|침해|제로트러스트|ISMS|"
+            r"암호|시큐어코딩|보안약점|OWASP|CSAP|IoT|보안가이드|"
+            r"보안취약|보안인증|보안업무|보안관리|통신비밀|주요정보통신기반"
+        ), GC.INFO_SECURITY),
+        # 클라우드
+        (re.compile(r"클라우드|Cloud|SaaS|PaaS|IaaS"), GC.CLOUD),
+        # 소프트웨어
+        (re.compile(r"소프트웨어|SW\s|SW사업|대가산정|개발보안|공개SW|영향평가|ISP|ISMP"), GC.SOFTWARE),
+        # 데이터
+        (re.compile(r"데이터|빅데이터|공공데이터|품질관리\s*지침"), GC.DATA),
+        # 전자정부
+        (re.compile(
+            r"전자정부|정보시스템|감리|정보화|웹사이트|UI/UX|표준운영|"
+            r"정보자원|코드표준|스마트워크|모바일.*서비스|전자민원|"
+            r"스마트빌리지|영상회의|인터넷전화|정보통신서비스|GNS"
+        ), GC.E_GOV),
+        # 금융
+        (re.compile(r"전자금융|금융보안|핀테크|금융"), GC.FINANCE),
+    ]
+
+
+def auto_categorize(title: str) -> "GuidelineCategory":
+    """제목 기반 카테고리 자동 분류. 매칭 안 되면 OTHER."""
+    global _CATEGORY_RULES
+    if not _CATEGORY_RULES:
+        _CATEGORY_RULES = _build_category_rules()
+
+    for pattern, category in _CATEGORY_RULES:
+        if pattern.search(title):
+            return category
+
+    from app.models.guideline import GuidelineCategory
+    return GuidelineCategory.OTHER
+
+
 # ── 메인 동기화 함수 ────────────────────────────────────
 
 
@@ -281,7 +333,7 @@ async def sync_crawl_results(
         guideline = Guideline(
             agency_id=agency_id,
             title=item.title,
-            category=GuidelineCategory.OTHER,
+            category=auto_categorize(item.title),
             source_url=item.url,
             pdf_url=pdf_url,
         )
