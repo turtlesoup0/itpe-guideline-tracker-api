@@ -86,20 +86,13 @@ AGENCY_SEEDS: list[AgencySeed] = [
         homepage_url="https://www.msit.go.kr",
         description="ICT 정책, 정보보호, SW산업 관련 고시·훈령 발행",
         targets=[
+            # NOTE: msit.go.kr 게시판은 JS 동적 렌더링 → 정적 크롤링 불가.
+            # 법제처 행정규칙 API (kordoc MCP search_admin_rule)로 대체 수집.
             CrawlTarget(
-                label="훈령·예규·고시",
-                source_type="bbs_list",
-                url="https://www.msit.go.kr/bbs/list.do?sCode=user&mPid=103&mId=108",
+                label="훈령·예규·고시 (법제처 API)",
+                source_type="law_api",
+                url="https://www.law.go.kr",  # 법제처 API 사용
                 schedule="weekly",
-                pagination_param="pageIndex",
-                keyword_filter=GUIDELINE_KEYWORDS,
-            ),
-            CrawlTarget(
-                label="입법예고",
-                source_type="bbs_list",
-                url="https://www.msit.go.kr/bbs/list.do?sCode=user&mPid=103&mId=109",
-                schedule="weekly",
-                pagination_param="pageIndex",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
         ],
@@ -169,9 +162,16 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
             ),
             CrawlTarget(
-                label="RSS 피드",
+                label="RSS 보도자료",
                 source_type="rss",
-                url="https://www.fsc.go.kr/ut060101",
+                url="http://www.fsc.go.kr/about/fsc_bbs_rss/?fid=0111",
+                schedule="daily",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
+            CrawlTarget(
+                label="RSS 공고·고시",
+                source_type="rss",
+                url="http://www.fsc.go.kr/about/fsc_bbs_rss/?fid=0112",
                 schedule="daily",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),

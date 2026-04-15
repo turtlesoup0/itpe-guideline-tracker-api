@@ -135,7 +135,8 @@ class BbsCrawler(BaseCrawler):
         if not title_tag:
             return None
 
-        title = title_tag.get_text(strip=True)
+        # 공백/개행 정제 (정부 사이트 HTML에 불필요한 공백이 많음)
+        title = " ".join(title_tag.get_text(strip=True).split())
         if not title:
             return None
 
