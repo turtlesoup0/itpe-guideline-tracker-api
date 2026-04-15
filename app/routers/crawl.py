@@ -156,6 +156,19 @@ async def crawl_agency(
     return results
 
 
+@router.post("/legal-bases/{agency_code}")
+async def crawl_legal_bases(
+    agency_code: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """법제처에서 기관의 행정규칙(고시/훈령)을 검색하여 DB에 저장합니다."""
+    from app.crawlers.law_api import fetch_and_store_legal_bases
+    result = await fetch_and_store_legal_bases(agency_code.upper(), db)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
 @router.get("/status", response_model=list[CrawlStatusOut])
 async def crawl_status(db: AsyncSession = Depends(get_db)) -> list[dict]:
     """전체 기관의 최근 크롤링 실행 현황."""
