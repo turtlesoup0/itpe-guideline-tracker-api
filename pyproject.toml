@@ -11,6 +11,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.14",
     "asyncpg>=0.30",           # PostgreSQL async driver
+    "greenlet>=3.0",           # SQLAlchemy async 지원
     # HTTP & Crawling
     "httpx>=0.28",
     "beautifulsoup4>=4.12",
