@@ -19,6 +19,7 @@ from app.crawlers.bbs import BbsCrawler
 from app.crawlers.rss import RssCrawler
 from app.db.session import get_db
 from app.models.agency import Agency, CrawlConfig, CrawlRun, CrawlRunStatus, CrawlSourceType
+from app.services.guideline_sync import sync_crawl_results
 
 router = APIRouter(prefix="/crawl", tags=["crawl"])
 
@@ -138,7 +139,16 @@ async def crawl_agency(
     for config in active_configs:
         crawl_result = await _run_config(config, agency.code)
 
-        # DB에 실행 이력 저장
+        # 크롤링 성공 시 → 가이드라인 자동 저장
+        sync_stats = {"new": 0, "updated": 0, "skipped": 0}
+        if crawl_result.success and crawl_result.items:
+            sync_stats = await sync_crawl_results(
+                agency_id=agency.id,
+                items=crawl_result.items,
+                db=db,
+            )
+
+        # DB에 실행 이력 저장 (items_new = 실제 신규 가이드라인 수)
         run = CrawlRun(
             agency_id=agency.id,
             config_id=config.id,
@@ -146,7 +156,7 @@ async def crawl_agency(
             started_at=crawl_result.started_at,
             finished_at=crawl_result.finished_at,
             items_found=crawl_result.count,
-            items_new=crawl_result.count,  # TODO: 기존 데이터와 비교하여 실제 신규만 카운트
+            items_new=sync_stats["new"] + sync_stats["updated"],
             error_message=crawl_result.error,
         )
         db.add(run)

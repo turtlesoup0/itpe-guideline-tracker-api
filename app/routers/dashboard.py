@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.agency import Agency, CrawlConfig, CrawlRun, CrawlRunStatus
-from app.models.guideline import GapAnalysis, GapStatus, Guideline, LegalBasis, Mandate
+from app.models.guideline import GapAnalysis, GapStatus, Guideline, GuidelineVersion, LegalBasis, Mandate
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -55,6 +55,9 @@ class DashboardSummary(BaseModel):
 
     # 최근 수집된 법적 근거 (최신 10건)
     recent_legal_bases: list[dict]
+
+    # 최근 수집된 가이드라인 (최신 10건)
+    recent_guidelines: list[dict]
 
 
 # ── Endpoint ─────────────────────────────────────────────
@@ -144,6 +147,28 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         for row in recent_lb_result.all()
     ]
 
+    # ── 최근 수집된 가이드라인 (최신 10건) ──
+    recent_gl_result = await db.execute(
+        select(GuidelineVersion, Guideline.title, Agency.short_name)
+        .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
+        .join(Agency, Guideline.agency_id == Agency.id)
+        .order_by(GuidelineVersion.detected_at.desc())
+        .limit(10)
+    )
+    recent_guidelines = [
+        {
+            "id": row[0].id,
+            "guideline_id": row[0].guideline_id,
+            "title": row[1],
+            "agency_name": row[2],
+            "version_label": row[0].version_label,
+            "published_date": row[0].published_date.isoformat() if row[0].published_date else None,
+            "pdf_url": row[0].pdf_url,
+            "detected_at": row[0].detected_at.isoformat() if row[0].detected_at else None,
+        }
+        for row in recent_gl_result.all()
+    ]
+
     return {
         "agency_count": len(agencies_db),
         "legal_basis_count": total_lb.scalar() or 0,
@@ -155,4 +180,5 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         "yegyu_count": lb_type_map.get("yegyu", 0),
         "agencies": agency_summaries,
         "recent_legal_bases": recent_bases,
+        "recent_guidelines": recent_guidelines,
     }

@@ -192,6 +192,18 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 pagination_param="pageIndex",
                 keyword_filter=[],  # 발간물 페이지 자체가 선별 콘텐츠
             ),
+            CrawlTarget(
+                label="공지사항",
+                source_type="bbs_list",
+                url="https://www.nia.or.kr/site/nia_kor/ex/bbs/List.do?cbIdx=99835",
+                schedule="weekly",
+                list_selector=".board_type01 li",
+                title_selector="a",
+                date_selector="span.src",
+                pagination_param="pageIndex",
+                max_pages=15,
+                keyword_filter=GUIDELINE_KEYWORDS + ["배포", "발간"],
+            ),
         ],
     ),
     # ─────────────────────────────────────────────────────

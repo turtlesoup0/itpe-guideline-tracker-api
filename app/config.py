@@ -41,7 +41,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     # ── CORS (프론트엔드 연동) ───────────────────────────
-    cors_origins: list[str] = ["http://localhost:3000"]
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://itpe-guideline-tracker-web.vercel.app",
+    ]
 
 
 @lru_cache

@@ -162,16 +162,25 @@ class BbsCrawler(BaseCrawler):
         url = ""
         if link_tag and link_tag.get("href"):
             href = str(link_tag["href"])
-            if href == "#view" or href == "#":
-                # NIA 등: onclick 속성에서 URL 파라미터 추출
+            if href in ("#view", "#", "#LINK"):
                 onclick = str(link_tag.get("onclick", ""))
-                # doBbsFView('cbIdx','bcIdx',...) → /site/nia_kor/ex/bbs/View.do?cbIdx=...&bcIdx=...
+                # NIA: doBbsFView('cbIdx','bcIdx',...) → /site/nia_kor/ex/bbs/View.do?cbIdx=...&bcIdx=...
                 onclick_match = re.search(r"doBbsFView\('(\d+)','(\d+)'", onclick)
                 if onclick_match:
                     url = urljoin(
                         page_url,
                         f"/site/nia_kor/ex/bbs/View.do?cbIdx={onclick_match.group(1)}&bcIdx={onclick_match.group(2)}",
                     )
+                else:
+                    # NCSC: fn_inqire_notice('nttId','bbsId') → /main/cop/bbs/selectBoardArticle.do?bbsId=...&nttId=...
+                    ncsc_match = re.search(r"fn_inqire_notice\('(\d+)','([^']+)'", onclick)
+                    if ncsc_match:
+                        ntt_id = ncsc_match.group(1)
+                        bbs_id = ncsc_match.group(2)
+                        url = urljoin(
+                            page_url,
+                            f"/main/cop/bbs/selectBoardArticle.do?bbsId={bbs_id}&nttId={ntt_id}",
+                        )
             else:
                 url = urljoin(page_url, href)
 

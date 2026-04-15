@@ -55,6 +55,8 @@ class GuidelineOut(BaseModel):
     description: str | None
     source_url: str | None
     pdf_url: str | None
+    latest_published_date: date | None = None
+    version_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -120,9 +122,9 @@ async def list_guidelines(
     agency_code: str | None = Query(None, description="기관 코드로 필터"),
     category: GuidelineCategory | None = Query(None, description="분야 필터"),
     db: AsyncSession = Depends(get_db),
-) -> list[Guideline]:
-    """가이드라인 목록 조회."""
-    stmt = select(Guideline)
+) -> list[dict]:
+    """가이드라인 목록 조회. latest_published_date, version_count 포함."""
+    stmt = select(Guideline).options(selectinload(Guideline.versions))
 
     if agency_code:
         from app.models.agency import Agency
@@ -135,7 +137,19 @@ async def list_guidelines(
 
     stmt = stmt.order_by(Guideline.title)
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    guidelines = list(result.scalars().all())
+
+    return [
+        {
+            **{c.key: getattr(g, c.key) for c in Guideline.__table__.columns},
+            "latest_published_date": (
+                max((v.published_date for v in g.versions), default=None)
+                if g.versions else None
+            ),
+            "version_count": len(g.versions),
+        }
+        for g in guidelines
+    ]
 
 
 @router.get("/guidelines/{guideline_id}", response_model=GuidelineDetailOut)
