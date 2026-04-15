@@ -49,8 +49,9 @@ async def health() -> dict[str, str]:
 
 
 # ── Routers ──────────────────────────────────────────────
-from app.routers import agencies, crawl, guidelines
+from app.routers import agencies, crawl, dashboard, guidelines
 
 app.include_router(agencies.router)
 app.include_router(guidelines.router)
 app.include_router(crawl.router)
+app.include_router(dashboard.router)
