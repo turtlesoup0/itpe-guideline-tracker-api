@@ -4,7 +4,7 @@
 GET /dashboard/summary — 전체 현황을 단일 호출로 반환
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.agency import Agency, CrawlConfig, CrawlRun, CrawlRunStatus
-from app.models.guideline import GapAnalysis, GapStatus, Guideline, GuidelineVersion, LegalBasis, Mandate
+from app.models.guideline import Guideline, GuidelineVersion, LegalBasis, Mandate
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -42,8 +42,9 @@ class DashboardSummary(BaseModel):
     agency_count: int
     legal_basis_count: int
     guideline_count: int
-    gap_missing: int
-    gap_outdated: int
+    recently_updated_count: int  # 최근 30일 변경 가이드라인 수
+    gap_missing: int  # 레거시 (항상 0)
+    gap_outdated: int  # 레거시 (항상 0)
 
     # 유형별 법적 근거
     gosi_count: int
@@ -100,12 +101,13 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     )
     lb_type_map = dict(lb_type_result.all())
 
-    # ── 갭 분석 ──
-    gap_result = await db.execute(
-        select(GapAnalysis.status, func.count(GapAnalysis.id))
-        .group_by(GapAnalysis.status)
+    # ── 최근 30일 변경 가이드라인 수 ──
+    cutoff_30d = datetime.now() - timedelta(days=30)
+    recent_update_result = await db.execute(
+        select(func.count(func.distinct(GuidelineVersion.guideline_id)))
+        .where(GuidelineVersion.detected_at >= cutoff_30d)
     )
-    gap_map = dict(gap_result.all())
+    recently_updated_count = recent_update_result.scalar() or 0
 
     # ── 기관별 요약 ──
     agency_summaries: list[dict] = []
@@ -173,8 +175,9 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         "agency_count": len(agencies_db),
         "legal_basis_count": total_lb.scalar() or 0,
         "guideline_count": total_gl.scalar() or 0,
-        "gap_missing": gap_map.get(GapStatus.MISSING, 0),
-        "gap_outdated": gap_map.get(GapStatus.OUTDATED, 0),
+        "recently_updated_count": recently_updated_count,
+        "gap_missing": 0,
+        "gap_outdated": 0,
         "gosi_count": lb_type_map.get("gosi", 0),
         "hunryeong_count": lb_type_map.get("hunryeong", 0),
         "yegyu_count": lb_type_map.get("yegyu", 0),

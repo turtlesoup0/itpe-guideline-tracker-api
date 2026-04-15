@@ -64,6 +64,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS217&mCode=D010030000",
                 schedule="weekly",
                 pagination_param="pageIndex",
+                max_pages=8,  # 현행 안내서가 4페이지 이후에도 존재
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
             CrawlTarget(
@@ -108,14 +109,40 @@ AGENCY_SEEDS: list[AgencySeed] = [
         description="정보보호·개인정보 기술 가이드라인, 보안 안내서 발행",
         targets=[
             CrawlTarget(
-                label="가이드라인 자료실",
+                label="정보보호 안내서",
+                source_type="bbs_list",
+                url="https://www.kisa.or.kr/2060204",
+                schedule="weekly",
+                pagination_param="page",
+                max_pages=5,
+                keyword_filter=[],  # 자료실 자체가 가이드라인 전용
+            ),
+            CrawlTarget(
+                label="정보보호 매뉴얼·사례집",
+                source_type="bbs_list",
+                url="https://www.kisa.or.kr/2060205",
+                schedule="weekly",
+                pagination_param="page",
+                max_pages=5,
+                keyword_filter=[],
+            ),
+            CrawlTarget(
+                label="개인정보보호 가이드라인",
+                source_type="bbs_list",
+                url="https://www.kisa.or.kr/2060202",
+                schedule="weekly",
+                pagination_param="page",
+                max_pages=5,
+                keyword_filter=[],
+            ),
+            CrawlTarget(
+                label="가이드라인 자료실 (통합)",
                 source_type="bbs_list",
                 url="https://www.kisa.or.kr/2060207",
                 schedule="weekly",
                 pagination_param="page",
-                keyword_filter=[],  # 자료실 자체가 가이드라인 전용 → 필터 불필요
+                keyword_filter=[],
             ),
-            # NOTE: kisa.or.kr/702는 HTML 페이지이며 RSS를 제공하지 않음 → 제거
         ],
     ),
     # ─────────────────────────────────────────────────────
@@ -154,6 +181,15 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="daily",
                 pagination_param="curPage",
                 keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
+            ),
+            CrawlTarget(
+                label="고시·훈령",
+                source_type="bbs_list",
+                url="https://www.fsc.go.kr/po040200",
+                schedule="weekly",
+                pagination_param="curPage",
+                max_pages=5,
+                keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안"],
             ),
             CrawlTarget(
                 label="RSS 보도자료",
@@ -223,6 +259,24 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="daily",
                 pagination_param="pageIndex",
                 keyword_filter=GUIDELINE_KEYWORDS + ["정보시스템", "클라우드", "전자정부"],
+            ),
+            CrawlTarget(
+                label="정보화 표준·지침 자료실",
+                source_type="bbs_list",
+                url="https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardList.do?bbsId=BBSMSTR_000000000045",
+                schedule="weekly",
+                pagination_param="pageIndex",
+                max_pages=5,
+                keyword_filter=[],  # 자료실 자체가 표준·지침 전용
+            ),
+            CrawlTarget(
+                label="훈령·예규·고시",
+                source_type="bbs_list",
+                url="https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardList.do?bbsId=BBSMSTR_000000000016",
+                schedule="weekly",
+                pagination_param="pageIndex",
+                max_pages=5,
+                keyword_filter=GUIDELINE_KEYWORDS + ["정보시스템", "클라우드", "전자정부", "보안"],
             ),
             CrawlTarget(
                 label="RSS 피드",

@@ -1,25 +1,23 @@
 """
-가이드라인 + 법적 근거 + 갭 분석 API 라우트.
+가이드라인 + 법적 근거 API 라우트.
 
-GET  /guidelines                — 가이드라인 목록 (필터: agency, category)
+GET  /guidelines                — 가이드라인 목록 (필터: agency, category, q, sort_by)
+GET  /guidelines/recent-changes — 최근 변경된 가이드라인 목록
 GET  /guidelines/{id}           — 가이드라인 상세 + 버전 이력
 GET  /legal-bases               — 법적 근거(고시/훈령) 목록
 GET  /legal-bases/{id}/mandates — 위임 항목 목록
-GET  /gaps                      — 갭 분석 결과 (미발행/미갱신 가이드라인)
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.guideline import (
-    GapAnalysis,
-    GapStatus,
     Guideline,
     GuidelineCategory,
     GuidelineVersion,
@@ -90,28 +88,20 @@ class LegalBasisOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class GapOut(BaseModel):
-    id: int
-    mandate_id: int
-    guideline_id: int | None
-    status: str
-    basis_last_amended: date | None
-    guideline_last_updated: date | None
-    days_gap: int | None
-    note: str | None
-    # 조인 필드
-    mandate_description: str | None = None
-    legal_basis_title: str | None = None
+class RecentChangeOut(BaseModel):
+    """최근 변경된 가이드라인."""
+    guideline_id: int
+    title: str
+    agency_code: str
+    agency_name: str
+    category: str
+    change_type: str  # "new" | "updated"
+    version_label: str | None
+    published_date: date | None
+    detected_at: datetime
+    version_count: int
 
     model_config = {"from_attributes": True}
-
-
-class GapSummaryOut(BaseModel):
-    total_mandates: int
-    missing: int
-    outdated: int
-    resolved: int
-    gaps: list[GapOut]
 
 
 # ── Guidelines ───────────────────────────────────────────
@@ -121,25 +111,39 @@ class GapSummaryOut(BaseModel):
 async def list_guidelines(
     agency_code: str | None = Query(None, description="기관 코드로 필터"),
     category: GuidelineCategory | None = Query(None, description="분야 필터"),
+    q: str | None = Query(None, description="제목 텍스트 검색"),
+    sort_by: str = Query("title", description="정렬: title | latest_date | version_count"),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """가이드라인 목록 조회. latest_published_date, version_count 포함."""
-    stmt = select(Guideline).options(selectinload(Guideline.versions))
+    from app.models.agency import Agency
+
+    stmt = (
+        select(Guideline)
+        .join(Agency, Guideline.agency_id == Agency.id)
+        .options(selectinload(Guideline.versions))
+    )
 
     if agency_code:
-        from app.models.agency import Agency
-        stmt = stmt.join(Agency, Guideline.agency_id == Agency.id).where(
-            Agency.code == agency_code.upper()
-        )
+        stmt = stmt.where(Agency.code == agency_code.upper())
 
     if category:
         stmt = stmt.where(Guideline.category == category)
+
+    if q:
+        pattern = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Guideline.title.ilike(pattern),
+                Agency.short_name.ilike(pattern),
+            )
+        )
 
     stmt = stmt.order_by(Guideline.title)
     result = await db.execute(stmt)
     guidelines = list(result.scalars().all())
 
-    return [
+    items = [
         {
             **{c.key: getattr(g, c.key) for c in Guideline.__table__.columns},
             "latest_published_date": (
@@ -149,6 +153,82 @@ async def list_guidelines(
             "version_count": len(g.versions),
         }
         for g in guidelines
+    ]
+
+    # 정렬
+    if sort_by == "latest_date":
+        items.sort(key=lambda x: x["latest_published_date"] or date.min, reverse=True)
+    elif sort_by == "version_count":
+        items.sort(key=lambda x: x["version_count"], reverse=True)
+    # 기본값 title은 이미 DB에서 정렬됨
+
+    return items
+
+
+@router.get("/guidelines/recent-changes", response_model=list[RecentChangeOut])
+async def list_recent_changes(
+    days: int = Query(30, ge=1, le=365, description="최근 N일 이내"),
+    agency_code: str | None = Query(None, description="기관 코드 필터"),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """최근 신규 등록 또는 버전 갱신된 가이드라인 목록."""
+    from app.models.agency import Agency
+
+    cutoff = datetime.now() - timedelta(days=days)
+
+    stmt = (
+        select(
+            GuidelineVersion,
+            Guideline,
+            Agency.code,
+            Agency.short_name,
+            func.count(GuidelineVersion.id).over(
+                partition_by=GuidelineVersion.guideline_id
+            ).label("ver_count"),
+        )
+        .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
+        .join(Agency, Guideline.agency_id == Agency.id)
+        .where(GuidelineVersion.detected_at >= cutoff)
+        .order_by(GuidelineVersion.detected_at.desc())
+        .limit(limit)
+    )
+
+    if agency_code:
+        stmt = stmt.where(Agency.code == agency_code.upper())
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # guideline_id별 전체 버전 수를 위해 별도 쿼리
+    gl_ids = list({row[1].id for row in rows})
+    if gl_ids:
+        ver_count_result = await db.execute(
+            select(
+                GuidelineVersion.guideline_id,
+                func.count(GuidelineVersion.id),
+            )
+            .where(GuidelineVersion.guideline_id.in_(gl_ids))
+            .group_by(GuidelineVersion.guideline_id)
+        )
+        ver_count_map = dict(ver_count_result.all())
+    else:
+        ver_count_map = {}
+
+    return [
+        {
+            "guideline_id": gl.id,
+            "title": gl.title,
+            "agency_code": agency_code_val,
+            "agency_name": agency_name,
+            "category": gl.category.value if hasattr(gl.category, "value") else gl.category,
+            "change_type": "new" if ver_count_map.get(gl.id, 1) == 1 else "updated",
+            "version_label": ver.version_label,
+            "published_date": ver.published_date,
+            "detected_at": ver.detected_at,
+            "version_count": ver_count_map.get(gl.id, 1),
+        }
+        for ver, gl, agency_code_val, agency_name, _ in rows
     ]
 
 
@@ -233,44 +313,16 @@ async def list_mandates(
     ]
 
 
-# ── Gap Analysis ─────────────────────────────────────────
+# ── Gap Analysis (레거시 — 빈 응답 반환) ────────────────
 
 
-@router.get("/gaps", response_model=GapSummaryOut)
-async def get_gaps(
-    status: GapStatus | None = Query(None, description="상태 필터"),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """갭 분석 — 법적 근거 대비 가이드라인 누락/미갱신 현황."""
-    stmt = (
-        select(GapAnalysis, Mandate.description, LegalBasis.title)
-        .join(Mandate, GapAnalysis.mandate_id == Mandate.id)
-        .join(LegalBasis, Mandate.legal_basis_id == LegalBasis.id)
-    )
-
-    if status:
-        stmt = stmt.where(GapAnalysis.status == status)
-
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    gaps = [
-        {
-            **{c.key: getattr(row[0], c.key) for c in GapAnalysis.__table__.columns},
-            "mandate_description": row[1],
-            "legal_basis_title": row[2],
-        }
-        for row in rows
-    ]
-
-    # 전체 mandate 수
-    total_result = await db.execute(select(func.count(Mandate.id)))
-    total_mandates = total_result.scalar() or 0
-
+@router.get("/gaps")
+async def get_gaps() -> dict:
+    """레거시 갭 분석 — 빈 응답. 프론트엔드에서 /guidelines/recent-changes로 전환 예정."""
     return {
-        "total_mandates": total_mandates,
-        "missing": sum(1 for g in gaps if g["status"] == GapStatus.MISSING),
-        "outdated": sum(1 for g in gaps if g["status"] == GapStatus.OUTDATED),
-        "resolved": sum(1 for g in gaps if g["status"] == GapStatus.RESOLVED),
-        "gaps": gaps,
+        "total_mandates": 0,
+        "missing": 0,
+        "outdated": 0,
+        "resolved": 0,
+        "gaps": [],
     }
