@@ -110,6 +110,7 @@ class BbsCrawler(BaseCrawler):
                 or soup.select("table.bbsList tbody tr")
                 or soup.select(".board_list li")
                 or soup.select(".bbs_list li")
+                or soup.select(".board-list-wrap > ul > li")  # FSC 등 신규 디자인
                 or soup.select("table tbody tr")
             )
 
