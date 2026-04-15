@@ -1,0 +1,53 @@
+[project]
+name = "itpe-guideline-tracker-api"
+version = "0.1.0"
+description = "IT 보안/개인정보/SW 가이드라인 개정 추적 백엔드"
+requires-python = ">=3.12"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # Database
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "asyncpg>=0.30",           # PostgreSQL async driver
+    # HTTP & Crawling
+    "httpx>=0.28",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",               # fast HTML parser
+    "feedparser>=6.0",         # RSS/Atom parsing
+    # PDF parsing
+    "pdfplumber>=0.11",
+    # Task queue
+    "celery[redis]>=5.4",
+    # LLM
+    "anthropic>=0.40",
+    # Utilities
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "httpx",  # for TestClient
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
