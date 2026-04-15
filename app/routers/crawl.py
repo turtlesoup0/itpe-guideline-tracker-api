@@ -139,13 +139,15 @@ async def crawl_agency(
     for config in active_configs:
         crawl_result = await _run_config(config, agency.code)
 
-        # 크롤링 성공 시 → 가이드라인 자동 저장
+        # 크롤링 성공 시 → 가이드라인 자동 저장 (Stage 3 LLM 분류 포함)
         sync_stats = {"new": 0, "updated": 0, "skipped": 0}
         if crawl_result.success and crawl_result.items:
             sync_stats = await sync_crawl_results(
                 agency_id=agency.id,
                 items=crawl_result.items,
                 db=db,
+                config_label=config.label,
+                agency_name=agency.name,
             )
 
         # DB에 실행 이력 저장 (items_new = 실제 신규 가이드라인 수)

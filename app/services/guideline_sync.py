@@ -7,6 +7,7 @@
 3. 동일 제목 패턴(연도/판 제거 후 비교) + 다른 URL → 기존 Guideline에 새 Version 추가
 """
 
+import logging
 import re
 from datetime import date, datetime
 
@@ -16,6 +17,8 @@ from sqlalchemy.orm import selectinload
 
 from app.crawlers.base import CrawledItem
 from app.models.guideline import Guideline, GuidelineCategory, GuidelineVersion
+
+logger = logging.getLogger(__name__)
 
 
 # ── 제목 정규화 (버전 매칭용) ────────────────────────────
@@ -122,25 +125,31 @@ _EXCLUDE_PATTERNS = re.compile(
 )
 
 
-def is_guideline_title(title: str) -> bool:
-    """제목이 실제 가이드라인 문서인지 판별합니다.
+def classify_title(title: str) -> bool | None:
+    """제목 기반 가이드라인 분류 (3단계).
 
-    2단계 필터 (제외 우선):
-    1) 제외 패턴에 매칭되면 → 비-가이드라인 (강한 키워드가 있어도 제외)
-    2) 강한 키워드가 있으면 → 가이드라인으로 판정
-    3) 둘 다 아니면 → 보수적으로 제외
+    Returns:
+        True  — 확실한 가이드라인 (Stage 2: 강한 키워드)
+        False — 확실한 비-가이드라인 (Stage 1: 제외 패턴)
+        None  — 판단 불가, LLM 분류 필요 (Stage 3: 경계 케이스)
     """
-    # 1) 제외 패턴 매칭 → 무조건 비-가이드라인 (우선순위 최상위)
+    # Stage 1) 제외 패턴 매칭 → 무조건 비-가이드라인
     if _EXCLUDE_PATTERNS.search(title):
         return False
 
-    # 2) 강한 키워드 매칭 → 가이드라인
+    # Stage 2) 강한 키워드 매칭 → 가이드라인
     if _STRONG_KEYWORDS.search(title):
         return True
 
-    # 3) 나머지: 키워드 필터를 이미 통과한 항목이지만
-    #    강한 키워드가 없으므로 보수적으로 제외
-    return False
+    # Stage 3) 둘 다 아님 → 경계 케이스, LLM 판단 필요
+    return None
+
+
+# 하위 호환용 래퍼 (기존 코드에서 bool 반환 기대하는 곳용)
+def is_guideline_title(title: str) -> bool:
+    """classify_title()의 하위 호환 래퍼. None은 False로 처리."""
+    result = classify_title(title)
+    return result is True
 
 
 # ── 메인 동기화 함수 ────────────────────────────────────
@@ -150,11 +159,18 @@ async def sync_crawl_results(
     agency_id: int,
     items: list[CrawledItem],
     db: AsyncSession,
+    *,
+    config_label: str = "",
+    agency_name: str = "",
 ) -> dict:
     """크롤링 결과를 Guideline + GuidelineVersion으로 변환·저장합니다.
 
+    3단계 필터링:
+    - Stage 1-2: 정규식 패턴 (즉시, 비용 0)
+    - Stage 3: 로컬 Gemma LLM (경계 케이스만, ~0.5초/건)
+
     Returns:
-        {"new": 신규 가이드라인 수, "updated": 버전 추가 수, "skipped": 중복 스킵 수}
+        {"new": ..., "updated": ..., "skipped": ..., "filtered": ..., "llm_classified": ...}
     """
     if not items:
         return {"new": 0, "updated": 0, "skipped": 0}
@@ -182,12 +198,47 @@ async def sync_crawl_results(
     updated_count = 0
     skipped_count = 0
     filtered_count = 0
+    llm_classified_count = 0
 
     for item in items:
-        # 0) 가이드라인 제목 필터링 (오탐 방지)
-        if not is_guideline_title(item.title):
+        # 0) 3단계 가이드라인 분류
+        classification = classify_title(item.title)
+
+        if classification is False:
+            # Stage 1: 확실한 비-가이드라인
             filtered_count += 1
             continue
+
+        if classification is None:
+            # Stage 3: 경계 케이스 → LLM 분류
+            try:
+                from app.services.llm_classifier import classify_with_llm
+
+                result = await classify_with_llm(
+                    title=item.title,
+                    board_label=config_label,
+                    agency_name=agency_name,
+                    detail_url=item.url,
+                )
+                llm_classified_count += 1
+
+                if not result.is_guideline:
+                    logger.info(
+                        "LLM 제외: %s (%s)", item.title[:60], result.reason,
+                    )
+                    filtered_count += 1
+                    continue
+
+                logger.info(
+                    "LLM 수집: %s (%s)", item.title[:60], result.reason,
+                )
+            except Exception as e:
+                # LLM 실패 시 보수적으로 제외
+                logger.warning("LLM 분류 실패, 제외: %s — %s", item.title[:60], e)
+                filtered_count += 1
+                continue
+
+        # classification is True (Stage 2) 또는 LLM YES → 수집 진행
 
         # 1) URL 중복 → 스킵
         if item.url in url_index:
@@ -247,4 +298,10 @@ async def sync_crawl_results(
         title_index[norm_title] = (guideline, {pub_date})
         new_count += 1
 
-    return {"new": new_count, "updated": updated_count, "skipped": skipped_count, "filtered": filtered_count}
+    return {
+        "new": new_count,
+        "updated": updated_count,
+        "skipped": skipped_count,
+        "filtered": filtered_count,
+        "llm_classified": llm_classified_count,
+    }
