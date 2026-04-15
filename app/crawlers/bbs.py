@@ -135,8 +135,20 @@ class BbsCrawler(BaseCrawler):
         if not title_tag:
             return None
 
-        # 공백/개행 정제 (정부 사이트 HTML에 불필요한 공백이 많음)
-        title = " ".join(title_tag.get_text(strip=True).split())
+        # NIA 등: a 태그의 title 속성에 깨끗한 제목이 있는 경우 우선 사용
+        attr_title = title_tag.get("title", "")
+        if attr_title:
+            # "제목-첨부파일 있음", "제목(새 글)" 패턴 정제
+            attr_title = re.sub(r"\(새 글\)", "", attr_title)
+            attr_title = re.sub(r"-첨부파일 있음$", "", attr_title).strip()
+            if len(attr_title) >= 3:
+                title = attr_title
+            else:
+                title = " ".join(title_tag.get_text(strip=True).split())
+        else:
+            # 공백/개행 정제 (정부 사이트 HTML에 불필요한 공백이 많음)
+            title = " ".join(title_tag.get_text(strip=True).split())
+
         if not title:
             return None
 
@@ -150,7 +162,18 @@ class BbsCrawler(BaseCrawler):
         url = ""
         if link_tag and link_tag.get("href"):
             href = str(link_tag["href"])
-            url = urljoin(page_url, href)
+            if href == "#view" or href == "#":
+                # NIA 등: onclick 속성에서 URL 파라미터 추출
+                onclick = str(link_tag.get("onclick", ""))
+                # doBbsFView('cbIdx','bcIdx',...) → /site/nia_kor/ex/bbs/View.do?cbIdx=...&bcIdx=...
+                onclick_match = re.search(r"doBbsFView\('(\d+)','(\d+)'", onclick)
+                if onclick_match:
+                    url = urljoin(
+                        page_url,
+                        f"/site/nia_kor/ex/bbs/View.do?cbIdx={onclick_match.group(1)}&bcIdx={onclick_match.group(2)}",
+                    )
+            else:
+                url = urljoin(page_url, href)
 
         # 날짜 추출
         pub_date: date | None = None

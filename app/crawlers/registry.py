@@ -113,15 +113,9 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.kisa.or.kr/2060207",
                 schedule="weekly",
                 pagination_param="page",
-                keyword_filter=GUIDELINE_KEYWORDS,
+                keyword_filter=[],  # 자료실 자체가 가이드라인 전용 → 필터 불필요
             ),
-            CrawlTarget(
-                label="RSS 피드",
-                source_type="rss",
-                url="https://www.kisa.or.kr/702",
-                schedule="daily",
-                keyword_filter=GUIDELINE_KEYWORDS,
-            ),
+            # NOTE: kisa.or.kr/702는 HTML 페이지이며 RSS를 제공하지 않음 → 제거
         ],
     ),
     # ─────────────────────────────────────────────────────
@@ -192,7 +186,11 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 source_type="bbs_list",
                 url="https://www.nia.or.kr/site/nia_kor/ex/bbs/List.do?cbIdx=39485",
                 schedule="monthly",
-                keyword_filter=GUIDELINE_KEYWORDS,
+                list_selector=".board_type01 li",
+                title_selector="a",       # a[title] 속성에 제목 포함
+                date_selector="span.src",  # "2026.04.13조회수 235" → 날짜 파싱
+                pagination_param="pageIndex",
+                keyword_filter=[],  # 발간물 페이지 자체가 선별 콘텐츠
             ),
         ],
     ),
@@ -238,7 +236,11 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 source_type="bbs_list",
                 url="https://www.spri.kr/posts?code=data_all",
                 schedule="monthly",
-                keyword_filter=GUIDELINE_KEYWORDS + ["대가기준", "대가산정"],
+                list_selector=".com_list_box > ul > li",
+                title_selector=".title a",
+                date_selector=".data_list_area .list li:first-child .text",
+                pagination_param="data_page",
+                keyword_filter=[],  # 발간물 페이지 자체가 선별 콘텐츠
             ),
         ],
     ),
@@ -249,13 +251,15 @@ AGENCY_SEEDS: list[AgencySeed] = [
         code="KCC",
         name="방송통신위원회",
         short_name="방통위",
-        homepage_url="https://www.kcc.go.kr",
+        homepage_url="https://www.kmcc.go.kr",
         description="이용자보호 기준, 스팸방지 가이드, 통신 관련 고시",
         targets=[
+            # NOTE: kcc.go.kr → kmcc.go.kr 리다이렉트 + JS 동적 렌더링 → BBS 크롤링 불가.
+            # 법제처 행정규칙 DRF API로 대체 수집.
             CrawlTarget(
-                label="고시·훈령",
-                source_type="bbs_list",
-                url="https://www.kcc.go.kr/user.do?mode=view&page=P02060400",
+                label="고시·훈령 (법제처 API)",
+                source_type="law_api",
+                url="https://www.law.go.kr",
                 schedule="weekly",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
