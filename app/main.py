@@ -48,8 +48,9 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# ── Routers (Sub-task 이후 추가) ─────────────────────────
-# from app.routers import agencies, guidelines, crawl
-# app.include_router(agencies.router)
-# app.include_router(guidelines.router)
-# app.include_router(crawl.router)
+# ── Routers ──────────────────────────────────────────────
+from app.routers import agencies, crawl, guidelines
+
+app.include_router(agencies.router)
+app.include_router(guidelines.router)
+app.include_router(crawl.router)
