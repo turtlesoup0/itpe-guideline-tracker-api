@@ -184,6 +184,14 @@ def crawl_by_schedule(schedule: str) -> dict:
                     "error": str(e),
                 })
 
+        # 크롤링 완료 후 shared manifest 갱신
+        try:
+            from app.services.manifest import regenerate_manifest_sync
+            manifest_result = regenerate_manifest_sync(db)
+            logger.info(f"[crawl] Manifest 갱신: {manifest_result}")
+        except Exception as e:
+            logger.warning(f"[crawl] Manifest 갱신 실패 (무시): {e}")
+
         logger.info(f"[crawl] {schedule} complete: {configs_run} configs, {total_items} items")
         return {
             "schedule": schedule,

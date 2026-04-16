@@ -20,6 +20,7 @@ from app.crawlers.rss import RssCrawler
 from app.db.session import get_db
 from app.models.agency import Agency, CrawlConfig, CrawlRun, CrawlRunStatus, CrawlSourceType
 from app.services.guideline_sync import sync_crawl_results
+from app.services.manifest import regenerate_manifest_async
 
 router = APIRouter(prefix="/crawl", tags=["crawl"])
 
@@ -167,6 +168,14 @@ async def crawl_agency(
         db.add(run)
 
         results.append(_result_to_out(crawl_result))
+
+    # 크롤링 완료 후 shared manifest 갱신
+    try:
+        await regenerate_manifest_async(db)
+    except Exception as e:
+        # manifest 갱신 실패가 크롤 응답을 블로킹하면 안 됨
+        import logging
+        logging.getLogger(__name__).warning("[manifest] 갱신 실패 (무시): %s", e)
 
     return results
 
