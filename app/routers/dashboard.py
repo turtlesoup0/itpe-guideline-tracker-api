@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.agency import Agency, CrawlConfig, CrawlRun, CrawlRunStatus
-from app.models.guideline import Guideline, GuidelineVersion, LegalBasis, Mandate
+from app.models.guideline import Guideline, GuidelineCategory, GuidelineVersion, LegalBasis, Mandate
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -37,6 +37,12 @@ class AgencySummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CrawlHealthItem(BaseModel):
+    agency_code: str
+    agency_name: str
+    issue: str  # "never_crawled" | "last_failed" | "zero_items" | "stale"
+
+
 class DashboardSummary(BaseModel):
     # 상단 요약 카드
     agency_count: int
@@ -45,6 +51,13 @@ class DashboardSummary(BaseModel):
     recently_updated_count: int  # 최근 30일 변경 가이드라인 수
     gap_missing: int  # 레거시 (항상 0)
     gap_outdated: int  # 레거시 (항상 0)
+
+    # 최종 갱신 정보
+    last_global_crawl_at: datetime | None  # 전체 기관 중 가장 최근 크롤 시각
+    crawl_health: list[CrawlHealthItem]  # 크롤 건전성 경고
+
+    # 카테고리별 가이드라인 분포
+    category_stats: dict[str, int]
 
     # 유형별 법적 근거
     gosi_count: int
@@ -171,6 +184,55 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         for row in recent_gl_result.all()
     ]
 
+    # ── 전체 최종 갱신일 + 크롤 건전성 ──
+    last_global_crawl_at = None
+    crawl_health: list[dict] = []
+    from datetime import timezone
+    stale_threshold = datetime.now(timezone.utc) - timedelta(days=14)
+
+    for agency in agencies_db:
+        latest_run = (
+            max(agency.crawl_runs, key=lambda r: r.started_at)
+            if agency.crawl_runs
+            else None
+        )
+
+        if latest_run:
+            if last_global_crawl_at is None or latest_run.started_at > last_global_crawl_at:
+                last_global_crawl_at = latest_run.started_at
+
+            if latest_run.status == CrawlRunStatus.FAILED:
+                crawl_health.append({
+                    "agency_code": agency.code,
+                    "agency_name": agency.short_name,
+                    "issue": "last_failed",
+                })
+            elif latest_run.items_found == 0 and latest_run.items_new == 0:
+                crawl_health.append({
+                    "agency_code": agency.code,
+                    "agency_name": agency.short_name,
+                    "issue": "zero_items",
+                })
+            elif latest_run.started_at < stale_threshold:
+                crawl_health.append({
+                    "agency_code": agency.code,
+                    "agency_name": agency.short_name,
+                    "issue": "stale",
+                })
+        else:
+            crawl_health.append({
+                "agency_code": agency.code,
+                "agency_name": agency.short_name,
+                "issue": "never_crawled",
+            })
+
+    # ── 카테고리별 가이드라인 분포 ──
+    cat_result = await db.execute(
+        select(Guideline.category, func.count(Guideline.id))
+        .group_by(Guideline.category)
+    )
+    category_stats = {row[0].value: row[1] for row in cat_result.all()}
+
     return {
         "agency_count": len(agencies_db),
         "legal_basis_count": total_lb.scalar() or 0,
@@ -178,6 +240,9 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         "recently_updated_count": recently_updated_count,
         "gap_missing": 0,
         "gap_outdated": 0,
+        "last_global_crawl_at": last_global_crawl_at,
+        "crawl_health": crawl_health,
+        "category_stats": category_stats,
         "gosi_count": lb_type_map.get("gosi", 0),
         "hunryeong_count": lb_type_map.get("hunryeong", 0),
         "yegyu_count": lb_type_map.get("yegyu", 0),
