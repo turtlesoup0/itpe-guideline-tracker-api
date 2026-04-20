@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",  # 정의되지 않은 env var는 무시 (crawl_tasks 등이 os.environ에서 직접 읽음)
     )
 
     # ── App ──────────────────────────────────────────────
@@ -36,6 +37,10 @@ class Settings(BaseSettings):
 
     # ── 법제처 API ───────────────────────────────────────
     law_api_base: str = "https://www.law.go.kr"
+
+    # ── 법령 트래커 원격 cron 트리거 ──────────────────────
+    law_tracker_url: str = "https://itpe-law-tracker.vercel.app"
+    law_tracker_cron_secret: str = ""
 
     # ── Claude API (가이드라인 변경 의의 요약용) ──────────
     anthropic_api_key: str = ""

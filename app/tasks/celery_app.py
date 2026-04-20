@@ -63,4 +63,9 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.crawl_tasks.check_legal_basis_updates",
         "schedule": crontab(hour=1, minute=0, day_of_week=3),  # Wed 01:00 UTC
     },
+    # ── 매일 09:00 KST: 법령 트래커 개정 감지 (Vercel cron 대체) ──
+    "check-law-amendments": {
+        "task": "app.tasks.crawl_tasks.check_law_amendments",
+        "schedule": crontab(hour=0, minute=0),  # 00:00 UTC = 09:00 KST
+    },
 }

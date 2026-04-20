@@ -255,6 +255,48 @@ def crawl_agency(agency_code: str) -> dict:
         db.close()
 
 
+@celery.task(name="app.tasks.crawl_tasks.check_law_amendments")
+def check_law_amendments() -> dict:
+    """법령 트래커의 개정 감지 cron을 원격 트리거합니다.
+
+    Vercel cron이 Hobby 플랜 제한으로 동작하지 않아,
+    Mac mini의 Celery Beat에서 HTTP 호출로 대신 실행합니다.
+
+    필요 env:
+      - LAW_TRACKER_URL (default: https://itpe-law-tracker.vercel.app)
+      - LAW_TRACKER_CRON_SECRET (Vercel CRON_SECRET과 동일값)
+    """
+    import httpx
+    from app.config import get_settings
+
+    settings = get_settings()
+    base = settings.law_tracker_url
+    secret = settings.law_tracker_cron_secret
+
+    if not secret:
+        logger.error("[law-amend] LAW_TRACKER_CRON_SECRET 미설정")
+        return {"error": "LAW_TRACKER_CRON_SECRET not configured"}
+
+    results: dict = {"endpoints": {}}
+    for endpoint in ("/api/cron/check-amendments", "/api/cron/generate-summaries"):
+        url = f"{base}{endpoint}"
+        try:
+            with httpx.Client(timeout=300) as client:
+                res = client.get(url, headers={"Authorization": f"Bearer {secret}"})
+            data = res.json() if res.is_success else {}
+            results["endpoints"][endpoint] = {
+                "status": res.status_code,
+                "new_amendments": data.get("newAmendments"),
+                "errors": data.get("errors"),
+            }
+            logger.info(f"[law-amend] {endpoint} → {res.status_code}")
+        except Exception as e:
+            logger.error(f"[law-amend] {endpoint} 실패: {e}")
+            results["endpoints"][endpoint] = {"error": str(e)}
+
+    return results
+
+
 @celery.task(name="app.tasks.crawl_tasks.check_legal_basis_updates")
 def check_legal_basis_updates() -> dict:
     """법제처 행정규칙 API로 고시/훈령 변경을 감지합니다.
