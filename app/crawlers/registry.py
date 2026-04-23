@@ -23,6 +23,9 @@ class CrawlTarget:
     pagination_param: str | None = None
     max_pages: int = 3
     keyword_filter: list[str] = field(default_factory=list)
+    # 이 게시판에서 수집되는 항목의 유형: 보도자료/공지사항 게시판이면 "announcement",
+    # 자료실/가이드/매뉴얼 게시판이면 "guideline" (기본값)
+    item_type: str = "guideline"
 
 
 @dataclass
@@ -75,6 +78,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="daily",
                 pagination_param="pageIndex",
                 keyword_filter=GUIDELINE_KEYWORDS,
+            item_type="announcement",
             ),
         ],
     ),
@@ -175,6 +179,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 pagination_param="currentPage",
                 max_pages=3,
                 keyword_filter=GUIDELINE_KEYWORDS,
+            item_type="announcement",
             ),
             # 국정원 사이버·AI안보 발간자료 — static_pubs 모듈로 라우팅 (URL로 감지)
             CrawlTarget(
@@ -205,6 +210,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 title_selector=".subject a",
                 pagination_param="curPage",
                 keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
+            item_type="announcement",
             ),
             CrawlTarget(
                 label="고시·훈령",
@@ -223,6 +229,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.fsc.go.kr/about/fsc_bbs_rss/?fid=0111",
                 schedule="daily",
                 keyword_filter=GUIDELINE_KEYWORDS,
+            item_type="announcement",
             ),
         ],
     ),
@@ -258,6 +265,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 pagination_param="pageIndex",
                 max_pages=15,
                 keyword_filter=GUIDELINE_KEYWORDS + ["배포", "발간"],
+            item_type="announcement",
             ),
         ],
     ),
@@ -278,6 +286,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="daily",
                 pagination_param="pageIndex",
                 keyword_filter=GUIDELINE_KEYWORDS + ["정보시스템", "클라우드", "전자정부"],
+            item_type="announcement",
             ),
             CrawlTarget(
                 label="정보화 표준·지침 자료실",
@@ -303,6 +312,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.mois.go.kr/gpms/view/jsp/rss/rss.jsp?ctxCd=1012",
                 schedule="daily",
                 keyword_filter=GUIDELINE_KEYWORDS,
+            item_type="announcement",
             ),
         ],
     ),

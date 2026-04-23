@@ -110,6 +110,13 @@ class CrawlConfig(Base, TimestampMixin):
 
     is_active: Mapped[bool] = mapped_column(default=True)
 
+    # 이 소스에서 수집된 항목의 기본 유형 (guideline / announcement)
+    # 예: 자료실·가이드 = guideline, 보도자료·공지사항 = announcement
+    item_type: Mapped[str] = mapped_column(
+        String(20), default="guideline", nullable=False,
+        comment="소스별 기본 item_type: guideline | announcement"
+    )
+
     # Relations
     agency: Mapped["Agency"] = relationship(back_populates="crawl_configs")
 

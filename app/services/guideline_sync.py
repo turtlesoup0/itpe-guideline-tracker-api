@@ -247,6 +247,7 @@ async def sync_crawl_results(
     *,
     config_label: str = "",
     agency_name: str = "",
+    config_item_type: str = "guideline",
 ) -> dict:
     """크롤링 결과를 Guideline + GuidelineVersion으로 변환·저장합니다.
 
@@ -269,8 +270,8 @@ async def sync_crawl_results(
     existing_guidelines = list(existing_result.scalars().all())
 
     # 인덱스 구축
-    url_index: set[str] = {
-        g.source_url for g in existing_guidelines if g.source_url
+    url_index: dict[str, Guideline] = {
+        g.source_url: g for g in existing_guidelines if g.source_url
     }
     # title → (guideline, set of published_dates)
     title_index: dict[str, tuple[Guideline, set[date]]] = {}
@@ -325,8 +326,17 @@ async def sync_crawl_results(
 
         # classification is True (Stage 2) 또는 LLM YES → 수집 진행
 
-        # 1) URL 중복 → 스킵
+        # 1) URL 중복 → item_type 갱신 후 스킵
+        # (크롤 소스의 item_type이 기존 레코드와 다르면 config 기준으로 정정)
+        from app.models.guideline import ItemType
+        target_type = (
+            ItemType.ANNOUNCEMENT if config_item_type == "announcement"
+            else ItemType.GUIDELINE
+        )
         if item.url in url_index:
+            existing = url_index[item.url]
+            if existing.item_type != target_type:
+                existing.item_type = target_type
             skipped_count += 1
             continue
 
@@ -352,20 +362,21 @@ async def sync_crawl_results(
                 detected_at=datetime.now(),
             )
             db.add(new_version)
+            # 기존 가이드라인의 item_type도 소스 기준으로 정정
+            if existing.item_type != target_type:
+                existing.item_type = target_type
             # 인덱스 갱신
-            url_index.add(item.url)
+            url_index[item.url] = existing
             existing_dates.add(pub_date)
             updated_count += 1
             continue
 
-        # 3) 신규 가이드라인 생성
-        from app.models.guideline import ItemType
-        item_type = ItemType.ANNOUNCEMENT if classify_item_type(item.title) == "announcement" else ItemType.GUIDELINE
+        # 3) 신규 가이드라인 생성 — 소스(CrawlConfig)의 item_type 사용 (target_type 위에서 결정)
         guideline = Guideline(
             agency_id=agency_id,
             title=item.title,
             category=auto_categorize(item.title),
-            item_type=item_type,
+            item_type=target_type,
             source_url=item.url,
             pdf_url=pdf_url,
         )
@@ -382,7 +393,7 @@ async def sync_crawl_results(
         db.add(first_version)
 
         # 인덱스 갱신
-        url_index.add(item.url)
+        url_index[item.url] = guideline
         title_index[norm_title] = (guideline, {pub_date})
         new_count += 1
 
