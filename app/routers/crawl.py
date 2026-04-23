@@ -59,6 +59,14 @@ async def _run_config(config: CrawlConfig, agency_code: str) -> CrawlResult:
     """CrawlConfig에 따라 적절한 크롤러를 실행합니다."""
     keyword_list = config.keyword_filter.split(",") if config.keyword_filter else []
 
+    # Static Publications Page — 단일 URL에 발간자료 다수 나열된 구조
+    # (config.url이 프로필의 url과 일치하면 라우팅)
+    from app.crawlers.static_pubs import get_profiles as get_static_pubs_profiles
+    from app.crawlers.static_pubs import crawl_static_pubs
+    for pub_profile in get_static_pubs_profiles(agency_code):
+        if config.url == pub_profile.url:
+            return await crawl_static_pubs(pub_profile, keyword_filter=keyword_list)
+
     # BBS Detail Scan 모듈이 지원하는 기관이면 해당 크롤러로 라우팅
     # (list는 JS 렌더링이지만 detail은 SSR인 사이트용 — 프로필 기반)
     from app.crawlers.bbs_detail_scan import get_profile, crawl_bbs_detail_scan

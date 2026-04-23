@@ -162,6 +162,27 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="monthly",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
+            # 국정원 보도자료 — 표준 BBS
+            CrawlTarget(
+                label="국정원 보도자료",
+                source_type="bbs_list",
+                url="https://www.nis.go.kr:4016/CM/1_4/list.do",
+                schedule="weekly",
+                list_selector="table tbody tr",
+                title_selector="a.text-table-ellipsis",
+                link_selector="a.text-table-ellipsis",
+                pagination_param="currentPage",
+                max_pages=3,
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
+            # 국정원 사이버·AI안보 발간자료 — static_pubs 모듈로 라우팅 (URL로 감지)
+            CrawlTarget(
+                label="사이버·AI안보 발간자료",
+                source_type="bbs_list",  # dispatcher는 agency+url 매칭으로 static_pubs 라우팅
+                url="https://www.nis.go.kr:4016/AF/1_7_7_1.do",
+                schedule="monthly",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
         ],
     ),
     # ─────────────────────────────────────────────────────
