@@ -48,6 +48,19 @@ GUIDELINE_KEYWORDS = [
     "보고서", "백서", "사례집",
 ]
 
+# 보도·발표성 게시판용 넓은 필터 (IT/보안 도메인 + 정책 발표 성격)
+# announcement 소스에서만 사용 — 가이드라인 키워드만으로는 "개선방안 발표" 같은 정책성
+# 게시물이 매칭되지 않으므로 도메인 키워드로 필터링.
+ANNOUNCEMENT_KEYWORDS = [
+    # IT/보안 도메인
+    "클라우드", "인공지능", "AI", "정보보호", "사이버", "개인정보",
+    "데이터", "정보통신", "보안", "전자정부", "ICT", "SW", "소프트웨어",
+    "금융보안", "전자금융", "플랫폼", "지능정보", "양자", "디지털",
+    # 정책·제도·발표 키워드
+    "발표", "개선방안", "추진", "정책", "제도", "도입", "시행",
+    "개정", "제정", "공고",
+] + GUIDELINE_KEYWORDS
+
 
 # ── 9개 기관 시드 데이터 ─────────────────────────────────
 
@@ -77,7 +90,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.pipc.go.kr/np/cop/bbs/selectBoardList.do?bbsId=BS074&mCode=C020010000",
                 schedule="daily",
                 pagination_param="pageIndex",
-                keyword_filter=GUIDELINE_KEYWORDS,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
             item_type="announcement",
             ),
         ],
@@ -178,7 +191,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 link_selector="a.text-table-ellipsis",
                 pagination_param="currentPage",
                 max_pages=3,
-                keyword_filter=GUIDELINE_KEYWORDS,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
             item_type="announcement",
             ),
             # 국정원 사이버·AI안보 발간자료 — static_pubs 모듈로 라우팅 (URL로 감지)
@@ -209,7 +222,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 list_selector=".board-list-wrap > ul > li",
                 title_selector=".subject a",
                 pagination_param="curPage",
-                keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
+                keyword_filter=ANNOUNCEMENT_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
             item_type="announcement",
             ),
             CrawlTarget(
@@ -228,7 +241,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 source_type="rss",
                 url="https://www.fsc.go.kr/about/fsc_bbs_rss/?fid=0111",
                 schedule="daily",
-                keyword_filter=GUIDELINE_KEYWORDS,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
             item_type="announcement",
             ),
         ],
@@ -265,7 +278,21 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 pagination_param="pageIndex",
                 max_pages=15,
                 keyword_filter=GUIDELINE_KEYWORDS + ["배포", "발간"],
-            item_type="announcement",
+                # NIA 공지사항은 실제 가이드라인·발간물 안내가 많음 → guideline 유지
+            ),
+            # NIA 보도자료 (참고용 — 대부분 홍보성, 선별 수집)
+            CrawlTarget(
+                label="보도자료",
+                source_type="bbs_list",
+                url="https://www.nia.or.kr/site/nia_kor/ex/bbs/List.do?cbIdx=90549",
+                schedule="weekly",
+                list_selector=".board_type01 li",
+                title_selector="a",
+                date_selector="span.src",
+                pagination_param="pageIndex",
+                max_pages=3,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",
             ),
         ],
     ),
@@ -285,7 +312,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.mois.go.kr/frt/bbs/type010/commonSelectBoardList.do?bbsId=BBSMSTR_000000000008",
                 schedule="daily",
                 pagination_param="pageIndex",
-                keyword_filter=GUIDELINE_KEYWORDS + ["정보시스템", "클라우드", "전자정부"],
+                keyword_filter=ANNOUNCEMENT_KEYWORDS + ["정보시스템", "클라우드", "전자정부"],
             item_type="announcement",
             ),
             CrawlTarget(
@@ -311,7 +338,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 source_type="rss",
                 url="https://www.mois.go.kr/gpms/view/jsp/rss/rss.jsp?ctxCd=1012",
                 schedule="daily",
-                keyword_filter=GUIDELINE_KEYWORDS,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
             item_type="announcement",
             ),
         ],

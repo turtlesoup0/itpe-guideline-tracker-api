@@ -287,8 +287,13 @@ async def sync_crawl_results(
     llm_classified_count = 0
 
     for item in items:
-        # 0) 3단계 가이드라인 분류
-        classification = classify_title(item.title)
+        # 0) 가이드라인 분류는 guideline 소스에만 적용.
+        #    announcement 소스(보도자료·공지사항)는 해당 게시판 자체가 이미 보도성
+        #    맥락이므로 제목 기반 재분류는 스킵하고, 크롤러의 키워드 필터만 신뢰.
+        if config_item_type == "announcement":
+            classification = True  # 통과
+        else:
+            classification = classify_title(item.title)
 
         if classification is False:
             # Stage 1: 확실한 비-가이드라인
