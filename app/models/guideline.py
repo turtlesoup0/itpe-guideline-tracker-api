@@ -56,6 +56,12 @@ class GapStatus(str, PyEnum):
     RESOLVED = "resolved"                 # 해소됨
 
 
+class ItemType(str, PyEnum):
+    """수집 항목 유형 — 실제 가이드라인 vs 발표/보도."""
+    GUIDELINE = "guideline"          # 실제 가이드라인·안내서·매뉴얼 (PDF 본문)
+    ANNOUNCEMENT = "announcement"    # 가이드라인 발표·공고·보도자료 등
+
+
 # ── LegalBasis (고시/훈령) ───────────────────────────────
 
 
@@ -130,6 +136,10 @@ class Guideline(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     category: Mapped[GuidelineCategory] = mapped_column(
         Enum(GuidelineCategory), default=GuidelineCategory.OTHER
+    )
+    item_type: Mapped[ItemType] = mapped_column(
+        Enum(ItemType), default=ItemType.GUIDELINE, nullable=False,
+        comment="guideline=실제 가이드라인, announcement=발표·보도자료"
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True, comment="가이드라인 개요")
     source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="원문 게시 URL")

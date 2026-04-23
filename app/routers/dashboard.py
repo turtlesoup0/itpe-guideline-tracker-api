@@ -47,7 +47,8 @@ class DashboardSummary(BaseModel):
     # 상단 요약 카드
     agency_count: int
     legal_basis_count: int
-    guideline_count: int
+    guideline_count: int          # item_type=guideline 만
+    announcement_count: int       # item_type=announcement 만
     recently_updated_count: int  # 최근 30일 변경 가이드라인 수
     gap_missing: int  # 레거시 (항상 0)
     gap_outdated: int  # 레거시 (항상 0)
@@ -104,8 +105,14 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     gl_count_map: dict[int, int] = dict(gl_counts_result.all())
 
     # ── 전체 카운트 ──
+    from app.models.guideline import ItemType
     total_lb = await db.execute(select(func.count(LegalBasis.id)))
-    total_gl = await db.execute(select(func.count(Guideline.id)))
+    total_gl = await db.execute(
+        select(func.count(Guideline.id)).where(Guideline.item_type == ItemType.GUIDELINE)
+    )
+    total_ann = await db.execute(
+        select(func.count(Guideline.id)).where(Guideline.item_type == ItemType.ANNOUNCEMENT)
+    )
 
     # 유형별 법적 근거 수
     lb_type_result = await db.execute(
@@ -237,6 +244,7 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         "agency_count": len(agencies_db),
         "legal_basis_count": total_lb.scalar() or 0,
         "guideline_count": total_gl.scalar() or 0,
+        "announcement_count": total_ann.scalar() or 0,
         "recently_updated_count": recently_updated_count,
         "gap_missing": 0,
         "gap_outdated": 0,

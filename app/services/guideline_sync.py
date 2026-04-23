@@ -151,6 +151,33 @@ def classify_title(title: str) -> bool | None:
     return None
 
 
+# ── 발표/보도 패턴 (item_type=announcement 판별) ──
+# 제목에 가이드라인 키워드가 있어도 "발표/공고/보도자료"성 제목이면
+# 실제 문서가 아닌 보도성 게시물로 분류.
+_ANNOUNCEMENT_PATTERNS = re.compile(
+    r"(?:^|\s|['\"’”])발표(?:$|\s|['\"‘“])|"       # "...가이드라인' 발표"
+    r"발표\s*$|"                                    # 제목 끝이 "발표"
+    r"보도자료|"
+    r"공고$|공고\s|"
+    r"배포\s*(?:안내|알림)?\s*$|"                  # "... 배포" "...배포 안내"
+    r"제정\s*(?:안내|알림)?\s*$|"
+    r"개정\s*(?:안내|알림)?\s*$|"
+    r"발간\s*(?:안내|알림)?\s*$"
+)
+
+
+def classify_item_type(title: str) -> str:
+    """제목이 실제 가이드라인 문서(guideline)인지 발표/보도(announcement)인지 판별.
+
+    Returns:
+        "guideline"     — 실제 문서 (기본)
+        "announcement"  — 보도·발표·공고 성격
+    """
+    if _ANNOUNCEMENT_PATTERNS.search(title):
+        return "announcement"
+    return "guideline"
+
+
 # 하위 호환용 래퍼 (기존 코드에서 bool 반환 기대하는 곳용)
 def is_guideline_title(title: str) -> bool:
     """classify_title()의 하위 호환 래퍼. None은 False로 처리."""
@@ -332,10 +359,13 @@ async def sync_crawl_results(
             continue
 
         # 3) 신규 가이드라인 생성
+        from app.models.guideline import ItemType
+        item_type = ItemType.ANNOUNCEMENT if classify_item_type(item.title) == "announcement" else ItemType.GUIDELINE
         guideline = Guideline(
             agency_id=agency_id,
             title=item.title,
             category=auto_categorize(item.title),
+            item_type=item_type,
             source_url=item.url,
             pdf_url=pdf_url,
         )

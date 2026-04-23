@@ -21,6 +21,7 @@ from app.models.guideline import (
     Guideline,
     GuidelineCategory,
     GuidelineVersion,
+    ItemType,
     LegalBasis,
     LegalBasisType,
     Mandate,
@@ -50,6 +51,7 @@ class GuidelineOut(BaseModel):
     mandate_id: int | None
     title: str
     category: str
+    item_type: str
     description: str | None
     source_url: str | None
     pdf_url: str | None
@@ -111,11 +113,12 @@ class RecentChangeOut(BaseModel):
 async def list_guidelines(
     agency_code: str | None = Query(None, description="기관 코드로 필터"),
     category: GuidelineCategory | None = Query(None, description="분야 필터"),
+    item_type: ItemType | None = Query(None, description="유형: guideline | announcement"),
     q: str | None = Query(None, description="제목 텍스트 검색"),
     sort_by: str = Query("title", description="정렬: title | latest_date | version_count"),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """가이드라인 목록 조회. latest_published_date, version_count 포함."""
+    """가이드라인/발표 목록 조회."""
     from app.models.agency import Agency
 
     stmt = (
@@ -129,6 +132,9 @@ async def list_guidelines(
 
     if category:
         stmt = stmt.where(Guideline.category == category)
+
+    if item_type:
+        stmt = stmt.where(Guideline.item_type == item_type)
 
     if q:
         pattern = f"%{q.strip()}%"
