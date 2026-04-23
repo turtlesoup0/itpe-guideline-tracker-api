@@ -308,6 +308,28 @@ AGENCY_SEEDS: list[AgencySeed] = [
         ],
     ),
     # ─────────────────────────────────────────────────────
+    # 10. 금융보안원 (FSI)
+    # ─────────────────────────────────────────────────────
+    AgencySeed(
+        code="FSI",
+        name="금융보안원",
+        short_name="금융보안원",
+        homepage_url="https://www.fsec.or.kr",
+        description="금융분야 IT 보안 가이드·해설서 발행 (금융위 산하)",
+        targets=[
+            # FSI 자료마당 list 페이지는 JS 렌더링이라 BbsCrawler 불가.
+            # detail 페이지는 SSR이므로 bbsNo 증분 스캔 방식 사용 (crawlers/fsi.py).
+            # agency_code=="FSI" 분기에서 자동 처리됨.
+            CrawlTarget(
+                label="자료마당 가이드 (bbsNo 증분 스캔)",
+                source_type="bbs_list",  # dispatcher는 agency_code로 라우팅
+                url="https://www.fsec.or.kr/bbs/list?menuNo=222",
+                schedule="weekly",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
+        ],
+    ),
+    # ─────────────────────────────────────────────────────
     # 9. 방송통신위원회 (KCC)
     # ─────────────────────────────────────────────────────
     AgencySeed(

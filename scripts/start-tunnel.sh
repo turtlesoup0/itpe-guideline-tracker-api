@@ -32,6 +32,10 @@ sleep 6
 TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1)
 
 if [ -n "$TUNNEL_URL" ]; then
+    # 이전 URL과 비교해서 변경됐을 때만 Vercel 동기화 (재배포 비용 절약)
+    PREV_URL=""
+    [ -f "$TUNNEL_URL_FILE" ] && PREV_URL=$(cat "$TUNNEL_URL_FILE")
+
     echo "$TUNNEL_URL" > "$TUNNEL_URL_FILE"
     echo "[$(date)] Tunnel URL: $TUNNEL_URL"
     echo "[$(date)] URL saved to: $TUNNEL_URL_FILE"
@@ -41,6 +45,22 @@ if [ -n "$TUNNEL_URL" ]; then
         echo "[$(date)] Health check passed!"
     else
         echo "[$(date)] WARNING: Health check failed"
+    fi
+
+    # Vercel env 자동 동기화 (URL 변경 시 + vercel CLI 있을 때만)
+    if [ "$TUNNEL_URL" != "$PREV_URL" ] && command -v vercel >/dev/null 2>&1; then
+        echo "[$(date)] Vercel env 동기화 중 (이전: $PREV_URL)"
+        WEB_DIR="/Users/turtlesoup0-macmini/Projects/itpe-guideline-tracker-web"
+        if [ -d "$WEB_DIR" ]; then
+            (
+                cd "$WEB_DIR"
+                vercel env rm NEXT_PUBLIC_API_URL production --yes 2>/dev/null || true
+                printf "%s" "$TUNNEL_URL" | vercel env add NEXT_PUBLIC_API_URL production 2>&1 | tail -1
+                # 백그라운드로 재배포 (터널 기동 블로킹 방지)
+                nohup vercel --prod --cwd "$WEB_DIR" >/tmp/vercel-autodeploy.log 2>&1 &
+                echo "[$(date)] Vercel 재배포 백그라운드 시작 (로그: /tmp/vercel-autodeploy.log)"
+            )
+        fi
     fi
 else
     echo "[$(date)] ERROR: Could not extract tunnel URL"
