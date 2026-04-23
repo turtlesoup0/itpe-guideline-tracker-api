@@ -36,16 +36,26 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StaticPubsProfile:
-    """Static Publications Page 크롤러의 사이트별 설정."""
+    """Static Publications Page 크롤러의 사이트별 설정.
+
+    블록 분리 → 각 블록 내에서 title/seq/date 개별 매칭 방식.
+    cross-match(항목 경계를 넘어 다음 항목의 필드를 가져오는 오류) 방지.
+    """
 
     agency_code: str
     config_label: str
-    url: str                       # 발간자료 페이지 URL (단일)
-    # 각 항목 매칭 regex: group(1)=제목, group(2)=다운로드 seq/id
-    # DOTALL 모드 권장 (항목 블록이 여러 줄에 걸침)
-    item_regex: re.Pattern
+    url: str                            # 발간자료 페이지 URL (단일)
+
+    # 항목 블록 경계 (lookahead regex). 이 패턴 직전에서 split.
+    block_splitter: re.Pattern
+
+    # 각 블록 내에서 개별 필드 추출 regex
+    title_regex: re.Pattern             # group(1) = 제목
+    seq_regex: re.Pattern               # group(1) = 다운로드 seq/id
+    date_regex: Optional[re.Pattern] = None  # group(1) = YYYY-MM-DD (옵션)
+
     # 다운로드 URL 템플릿 — {seq} 자리에 추출값 대입
-    download_url_template: str
+    download_url_template: str = ""
     request_timeout: int = 20
 
 
@@ -82,30 +92,54 @@ async def crawl_static_pubs(
         result.finished_at = datetime.now()
         return result
 
-    # ── 각 발간자료 항목 추출 ──
+    # ── 블록 단위 분리 후 각 블록 파싱 ──
+    blocks = profile.block_splitter.split(html)
     seen_seq: set[str] = set()
-    for m in profile.item_regex.finditer(html):
-        title = m.group(1).strip()
-        seq = m.group(2).strip()
-        if not title or not seq:
+    for block in blocks[1:]:  # 첫 블록은 splitter 이전 = 페이지 헤더
+        title_m = profile.title_regex.search(block)
+        seq_m = profile.seq_regex.search(block)
+        if not title_m or not seq_m:
             continue
-        if seq in seen_seq:
-            continue                # 동일 seq 중복 방지
+
+        title = title_m.group(1).strip()
+        seq = seq_m.group(1).strip()
+        if not title or not seq or seq in seen_seq:
+            continue
         seen_seq.add(seq)
+
+        # 날짜 추출 (프로필 지원 시)
+        published_date = None
+        if profile.date_regex:
+            date_m = profile.date_regex.search(block)
+            if date_m:
+                try:
+                    published_date = datetime.strptime(date_m.group(1), "%Y-%m-%d").date()
+                except ValueError:
+                    pass
 
         # 키워드 필터
         if keyword_filter and not any(kw in title for kw in keyword_filter):
             continue
 
-        download_url = profile.download_url_template.format(seq=seq)
+        download_url = (
+            profile.download_url_template.format(seq=seq)
+            if profile.download_url_template
+            else ""
+        )
+        # source URL은 다운로드 URL로 (seq 단위로 고유 — sync 중복 체크 회피)
+        # 다운로드 URL이 없으면 페이지URL#seq 형태로 최소한의 유일성 확보
+        source_url = download_url or f"{profile.url}#{seq}"
         item = CrawledItem(
             title=title,
-            url=profile.url,                    # 페이지 자체를 source URL로 (detail 페이지 없음)
-            attachment_urls=[download_url],
-            published_date=None,                # 페이지에서 개별 날짜 추출 어려움
+            url=source_url,
+            attachment_urls=[download_url] if download_url else [],
+            published_date=published_date,
         )
         result.items.append(item)
-        logger.info(f"[{profile.agency_code}] 수집: {title[:60]}")
+        logger.info(
+            f"[{profile.agency_code}] 수집: "
+            f"[{published_date or '?'}] {title[:60]}"
+        )
 
     result.finished_at = datetime.now()
     logger.info(
@@ -118,13 +152,11 @@ async def crawl_static_pubs(
 # ── 사이트별 프로필 레지스트리 ─────────────────────────────
 
 
-# NIS 사이버·AI안보 발간자료 (img alt + download.do?seq= 패턴)
-# 제목과 다운로드 링크가 인접하게 반복되는 블록
-_NIS_AF_ITEM_REGEX = re.compile(
-    r'<img[^>]*class="border-gray01"[^>]*alt="([^"]+)".*?'
-    r'href="/common/download\.do\?seq=([A-F0-9]+)"',
-    re.DOTALL,
-)
+# NIS 사이버·AI안보 발간자료 (각 항목: img alt 제목 + download.do seq + 등록일자 행)
+_NIS_AF_BLOCK_SPLITTER = re.compile(r'(?=<img[^>]*class="border-gray01"[^>]*alt=")')
+_NIS_AF_TITLE = re.compile(r'<img[^>]*class="border-gray01"[^>]*alt="([^"]+)"')
+_NIS_AF_SEQ = re.compile(r'href="/common/download\.do\?seq=([A-F0-9]+)"')
+_NIS_AF_DATE = re.compile(r'등록일자.*?(\d{4}-\d{2}-\d{2})', re.DOTALL)
 
 PROFILES: dict[str, list[StaticPubsProfile]] = {
     "NIS": [
@@ -132,7 +164,10 @@ PROFILES: dict[str, list[StaticPubsProfile]] = {
             agency_code="NIS",
             config_label="사이버·AI안보 발간자료",
             url="https://www.nis.go.kr:4016/AF/1_7_7_1.do",
-            item_regex=_NIS_AF_ITEM_REGEX,
+            block_splitter=_NIS_AF_BLOCK_SPLITTER,
+            title_regex=_NIS_AF_TITLE,
+            seq_regex=_NIS_AF_SEQ,
+            date_regex=_NIS_AF_DATE,
             download_url_template="https://www.nis.go.kr:4016/common/download.do?seq={seq}",
         ),
     ],
