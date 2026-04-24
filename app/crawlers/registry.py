@@ -232,7 +232,8 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 title_selector=".subject a",
                 pagination_param="curPage",
                 max_pages=5,
-                keyword_filter=GUIDELINE_KEYWORDS + ["전자금융", "금융보안"],
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",  # 개별 행정 고시 (정책 발표 성격)
             ),
             CrawlTarget(
                 label="RSS 보도자료",
