@@ -200,10 +200,14 @@ async def list_recent_changes(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """최근 신규 등록 또는 버전 갱신된 가이드라인 목록."""
+    """최근 신규 등록 또는 버전 갱신된 가이드라인 목록.
+
+    기준은 실제 발행일(published_date). 시스템 탐지 시각(detected_at)이 아님.
+    """
+    from datetime import date as date_cls
     from app.models.agency import Agency
 
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = date_cls.today() - timedelta(days=days)
 
     stmt = (
         select(
@@ -217,8 +221,8 @@ async def list_recent_changes(
         )
         .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
         .join(Agency, Guideline.agency_id == Agency.id)
-        .where(GuidelineVersion.detected_at >= cutoff)
-        .order_by(GuidelineVersion.detected_at.desc())
+        .where(GuidelineVersion.published_date >= cutoff)
+        .order_by(GuidelineVersion.published_date.desc())
         .limit(limit)
     )
 

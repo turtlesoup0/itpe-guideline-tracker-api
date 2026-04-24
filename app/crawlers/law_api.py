@@ -115,10 +115,16 @@ async def search_admin_rules(
 
                 res = await client.get(DRF_API_URL, params=params)
                 if not res.is_success:
-                    print(f"[law_api] DRF API error for {term}: HTTP {res.status_code}")
-                    continue
+                    raise RuntimeError(f"DRF API HTTP {res.status_code} for '{term}'")
 
                 data = res.json()
+
+                # API 인증 실패 탐지 — "사용자 정보 검증 실패" 등
+                if "result" in data and "검증에 실패" in str(data.get("result", "")):
+                    raise RuntimeError(
+                        f"법제처 DRF API 인증 실패 (OC 키 '{DRF_OC_KEY}'의 등록 IP와 "
+                        f"서버 IP 불일치). 법제처 OPEN API 페이지에서 현재 서버 IP 등록 필요."
+                    )
 
                 # 응답 구조: { "AdmRulSearch": { "totalCnt": N, "admrul": [...] } }
                 search_result = data.get("AdmRulSearch", {})
@@ -177,6 +183,9 @@ async def search_admin_rules(
                     if len(items) >= max_results:
                         break
 
+            except RuntimeError:
+                # 인증 실패 등 — 다음 term도 어차피 실패이므로 즉시 전파
+                raise
             except Exception as e:
                 print(f"[law_api] search_admin_rules error for {term}: {e}")
                 continue

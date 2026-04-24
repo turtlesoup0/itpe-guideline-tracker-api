@@ -40,7 +40,10 @@ class AgencySummary(BaseModel):
 class CrawlHealthItem(BaseModel):
     agency_code: str
     agency_name: str
-    issue: str  # "never_crawled" | "last_failed" | "zero_items" | "stale"
+    issue: str  # "never_crawled" | "all_failed" | "zero_keyword_match" | "stale"
+    detail: str | None = None  # 사람이 읽을 수 있는 경고 상세 (예: "키워드 매칭 0")
+    latest_run_at: datetime | None = None
+    items_collected: int = 0  # 최근 run에서 수집(크롤 결과) 건수 합계
 
 
 class DashboardSummary(BaseModel):
@@ -122,10 +125,13 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     lb_type_map = dict(lb_type_result.all())
 
     # ── 최근 30일 변경 가이드라인 수 ──
-    cutoff_30d = datetime.now() - timedelta(days=30)
+    # 실제 발행일(published_date) 기준. 시스템 탐지 시각(detected_at)이 아님 —
+    # 시스템이 과거 가이드라인을 "오늘" 처음 수집해도 "최근 발행"이 아니기 때문.
+    from datetime import date as date_cls
+    cutoff_30d = date_cls.today() - timedelta(days=30)
     recent_update_result = await db.execute(
         select(func.count(func.distinct(GuidelineVersion.guideline_id)))
-        .where(GuidelineVersion.detected_at >= cutoff_30d)
+        .where(GuidelineVersion.published_date >= cutoff_30d)
     )
     recently_updated_count = recent_update_result.scalar() or 0
 
@@ -192,46 +198,84 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     ]
 
     # ── 전체 최종 갱신일 + 크롤 건전성 ──
+    # 각 config의 "최근 실행" 기준으로 집계하여 기관 전체 상태 종합 판단.
     last_global_crawl_at = None
     crawl_health: list[dict] = []
     from datetime import timezone
     stale_threshold = datetime.now(timezone.utc) - timedelta(days=14)
 
+    # config_id → 최신 CrawlRun 맵
+    latest_per_config: dict[int, "CrawlRun"] = {}
     for agency in agencies_db:
-        latest_run = (
-            max(agency.crawl_runs, key=lambda r: r.started_at)
-            if agency.crawl_runs
-            else None
-        )
+        for run in agency.crawl_runs:
+            cid = run.config_id
+            if cid is None:
+                continue
+            prev = latest_per_config.get(cid)
+            if prev is None or run.started_at > prev.started_at:
+                latest_per_config[cid] = run
 
-        if latest_run:
-            if last_global_crawl_at is None or latest_run.started_at > last_global_crawl_at:
-                last_global_crawl_at = latest_run.started_at
+    for agency in agencies_db:
+        # 이 기관의 config들 중 최신 run 모음
+        runs = [
+            latest_per_config[c.id]
+            for c in agency.crawl_configs
+            if c.is_active and c.id in latest_per_config
+        ]
 
-            if latest_run.status == CrawlRunStatus.FAILED:
-                crawl_health.append({
-                    "agency_code": agency.code,
-                    "agency_name": agency.short_name,
-                    "issue": "last_failed",
-                })
-            elif latest_run.items_found == 0 and latest_run.items_new == 0:
-                crawl_health.append({
-                    "agency_code": agency.code,
-                    "agency_name": agency.short_name,
-                    "issue": "zero_items",
-                })
-            elif latest_run.started_at < stale_threshold:
-                crawl_health.append({
-                    "agency_code": agency.code,
-                    "agency_name": agency.short_name,
-                    "issue": "stale",
-                })
-        else:
+        if not runs:
             crawl_health.append({
                 "agency_code": agency.code,
                 "agency_name": agency.short_name,
                 "issue": "never_crawled",
+                "detail": "크롤 이력 없음",
+                "latest_run_at": None,
+                "items_collected": 0,
             })
+            continue
+
+        max_run_at = max(r.started_at for r in runs)
+        if last_global_crawl_at is None or max_run_at > last_global_crawl_at:
+            last_global_crawl_at = max_run_at
+
+        total_found = sum((r.items_found or 0) for r in runs)
+        succeeded = [r for r in runs if r.status == CrawlRunStatus.SUCCESS]
+        failed = [r for r in runs if r.status == CrawlRunStatus.FAILED]
+
+        # 판단 로직
+        if runs and not succeeded:
+            # 모든 config 실패
+            err_samples = ", ".join(
+                (r.error_message or "unknown")[:40] for r in failed[:2]
+            )
+            crawl_health.append({
+                "agency_code": agency.code,
+                "agency_name": agency.short_name,
+                "issue": "all_failed",
+                "detail": f"크롤 실패: {err_samples}",
+                "latest_run_at": max_run_at,
+                "items_collected": 0,
+            })
+        elif total_found == 0:
+            # 크롤 성공했으나 수집 결과 0 (키워드 매칭 없음)
+            crawl_health.append({
+                "agency_code": agency.code,
+                "agency_name": agency.short_name,
+                "issue": "zero_keyword_match",
+                "detail": f"대상 키워드 매칭 게시물 없음 (게시판 접근은 정상)",
+                "latest_run_at": max_run_at,
+                "items_collected": 0,
+            })
+        elif max_run_at < stale_threshold:
+            crawl_health.append({
+                "agency_code": agency.code,
+                "agency_name": agency.short_name,
+                "issue": "stale",
+                "detail": "최근 2주+ 미실행",
+                "latest_run_at": max_run_at,
+                "items_collected": total_found,
+            })
+        # total_found > 0이면 정상 — 경고 없음 (items_new=0이어도 "기존 데이터 유지" 상태)
 
     # ── 카테고리별 가이드라인 분포 ──
     cat_result = await db.execute(
