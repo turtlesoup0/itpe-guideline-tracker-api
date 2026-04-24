@@ -122,6 +122,8 @@ class RecentChangeOut(BaseModel):
     change_type: str  # "new" | "updated"
     version_label: str | None
     published_date: date | None
+    previous_published_date: date | None = None  # 이전 버전 발행일 (있으면)
+    previous_version_label: str | None = None
     detected_at: datetime
     version_count: int
 
@@ -232,8 +234,24 @@ async def list_recent_changes(
     result = await db.execute(stmt)
     rows = result.all()
 
-    # guideline_id별 전체 버전 수를 위해 별도 쿼리
+    # 각 Guideline의 이전 버전(현재 버전보다 과거 발행일 중 최신)을 가져오기
+    # guideline_id → [(published_date, version_label), ...] 정렬된 버전 리스트
     gl_ids = list({row[1].id for row in rows})
+    version_history: dict[int, list[tuple[date, str | None]]] = {}
+    if gl_ids:
+        all_versions = await db.execute(
+            select(
+                GuidelineVersion.guideline_id,
+                GuidelineVersion.published_date,
+                GuidelineVersion.version_label,
+            )
+            .where(GuidelineVersion.guideline_id.in_(gl_ids))
+            .order_by(GuidelineVersion.guideline_id, GuidelineVersion.published_date.desc())
+        )
+        for gid, pd, vl in all_versions.all():
+            version_history.setdefault(gid, []).append((pd, vl))
+
+    # guideline_id별 전체 버전 수를 위해 별도 쿼리
     if gl_ids:
         ver_count_result = await db.execute(
             select(
@@ -247,8 +265,17 @@ async def list_recent_changes(
     else:
         ver_count_map = {}
 
-    return [
-        {
+    out = []
+    for ver, gl, agency_code_val, agency_name, _ in rows:
+        # 이전 버전 찾기: 이 ver의 published_date보다 과거 중 가장 최근
+        prev_pd = None
+        prev_vl = None
+        for pd, vl in version_history.get(gl.id, []):
+            if pd < ver.published_date:
+                prev_pd = pd
+                prev_vl = vl
+                break
+        out.append({
             "guideline_id": gl.id,
             "title": gl.title,
             "agency_code": agency_code_val,
@@ -257,11 +284,12 @@ async def list_recent_changes(
             "change_type": "new" if ver_count_map.get(gl.id, 1) == 1 else "updated",
             "version_label": ver.version_label,
             "published_date": ver.published_date,
+            "previous_published_date": prev_pd,
+            "previous_version_label": prev_vl,
             "detected_at": ver.detected_at,
             "version_count": ver_count_map.get(gl.id, 1),
-        }
-        for ver, gl, agency_code_val, agency_name, _ in rows
-    ]
+        })
+    return out
 
 
 @router.get("/guidelines/{guideline_id}", response_model=GuidelineDetailOut)

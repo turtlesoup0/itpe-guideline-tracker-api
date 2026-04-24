@@ -76,8 +76,12 @@ async def _get_last_id(
     agency_id: int,
     id_param_name: str,
     baseline: int,
+    url_prefix: str = "",
 ) -> int:
-    """DB의 해당 기관 source_url에서 최대 ID를 추출. 없으면 baseline."""
+    """DB의 해당 기관 source_url에서 최대 ID를 추출. 없으면 baseline.
+
+    url_prefix: 프로필별 URL 접두사(예: "menuNo=222") — 다중 프로필 분리.
+    """
     result = await db.execute(
         select(Guideline.source_url).where(Guideline.agency_id == agency_id)
     )
@@ -86,6 +90,9 @@ async def _get_last_id(
     max_id = baseline
     pattern = re.compile(rf"{re.escape(id_param_name)}=(\d+)")
     for url in urls:
+        # 프로필별 URL prefix 매칭 (예: menuNo=222 전용 vs menuNo=69 전용)
+        if url_prefix and url_prefix not in url:
+            continue
         m = pattern.search(url)
         if m:
             max_id = max(max_id, int(m.group(1)))
@@ -178,7 +185,12 @@ async def crawl_bbs_detail_scan(
             result.error = f"Agency {profile.agency_code} not seeded"
             result.finished_at = datetime.now()
             return result
-        last_id = await _get_last_id(db, agency.id, profile.id_param_name, profile.baseline_id)
+        # 프로필 URL 템플릿의 고유 파라미터를 prefix로 사용 (menuNo=222 등)
+        prefix_match = re.search(r"(menuNo=\d+|cbIdx=\d+|boardId=\d+|bbsId=[^&]+)", profile.url_template)
+        url_prefix = prefix_match.group(1) if prefix_match else ""
+        last_id = await _get_last_id(
+            db, agency.id, profile.id_param_name, profile.baseline_id, url_prefix=url_prefix,
+        )
 
     start = last_id + 1
     end = last_id + profile.scan_window
