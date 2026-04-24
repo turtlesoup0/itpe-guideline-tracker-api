@@ -48,18 +48,14 @@ GUIDELINE_KEYWORDS = [
     "보고서", "백서", "사례집",
 ]
 
-# 보도·발표성 게시판용 넓은 필터 (IT/보안 도메인 + 정책 발표 성격)
-# announcement 소스에서만 사용 — 가이드라인 키워드만으로는 "개선방안 발표" 같은 정책성
-# 게시물이 매칭되지 않으므로 도메인 키워드로 필터링.
-ANNOUNCEMENT_KEYWORDS = [
-    # IT/보안 도메인
-    "클라우드", "인공지능", "AI", "정보보호", "사이버", "개인정보",
-    "데이터", "정보통신", "보안", "전자정부", "ICT", "SW", "소프트웨어",
-    "금융보안", "전자금융", "플랫폼", "지능정보", "양자", "디지털",
-    # 정책·제도·발표 키워드
-    "발표", "개선방안", "추진", "정책", "제도", "도입", "시행",
-    "개정", "제정", "공고",
-] + GUIDELINE_KEYWORDS
+# 보도·발표 게시판 필터 — 가이드라인/법령/고시 발표성 글만 수집
+# (단순 홍보성 보도자료, 행사 안내, 인사 소식 등은 제외)
+ANNOUNCEMENT_KEYWORDS = GUIDELINE_KEYWORDS + [
+    # 법령·행정규칙 유형
+    "고시", "시행령", "시행규칙", "훈령", "예규", "규정",
+    # 변경 키워드 (제정/개정/폐지)
+    "개정", "제정", "폐지",
+]
 
 
 # ── 9개 기관 시드 데이터 ─────────────────────────────────
@@ -386,6 +382,15 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="weekly",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
+            # 금융보안원 보도자료 (menuNo=69) — detail SSR 이용한 bbsNo 증분 스캔
+            CrawlTarget(
+                label="보도자료 (bbsNo 증분 스캔)",
+                source_type="bbs_list",
+                url="https://www.fsec.or.kr/bbs/list?menuNo=69",
+                schedule="weekly",
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",
+            ),
         ],
     ),
     # ─────────────────────────────────────────────────────
@@ -406,6 +411,20 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 url="https://www.law.go.kr",
                 schedule="weekly",
                 keyword_filter=GUIDELINE_KEYWORDS,
+            ),
+            # 방통위 보도자료 — kcc.go.kr (SSR 게시판)
+            CrawlTarget(
+                label="보도자료",
+                source_type="bbs_list",
+                url="https://kcc.go.kr/user.do?boardId=1113&page=A05030000",
+                schedule="weekly",
+                list_selector="tbody tr",
+                title_selector="a[href*='boardSeq']",
+                link_selector="a[href*='boardSeq']",
+                pagination_param="cp",
+                max_pages=3,
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",
             ),
         ],
     ),

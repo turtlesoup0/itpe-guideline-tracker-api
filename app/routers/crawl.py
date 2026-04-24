@@ -67,10 +67,10 @@ async def _run_config(config: CrawlConfig, agency_code: str) -> CrawlResult:
         if config.url == pub_profile.url:
             return await crawl_static_pubs(pub_profile, keyword_filter=keyword_list)
 
-    # BBS Detail Scan 모듈이 지원하는 기관이면 해당 크롤러로 라우팅
-    # (list는 JS 렌더링이지만 detail은 SSR인 사이트용 — 프로필 기반)
-    from app.crawlers.bbs_detail_scan import get_profile, crawl_bbs_detail_scan
-    profile = get_profile(agency_code)
+    # BBS Detail Scan 모듈 — list는 JS 렌더링 + detail SSR인 사이트용
+    # CrawlConfig.url로 정확히 매칭되는 프로필이 있으면 해당 크롤러로 라우팅
+    from app.crawlers.bbs_detail_scan import get_profile_by_url, crawl_bbs_detail_scan
+    profile = get_profile_by_url(agency_code, config.url)
     if profile is not None:
         return await crawl_bbs_detail_scan(
             profile=profile,

@@ -53,6 +53,7 @@ class ScanProfile:
     """
 
     agency_code: str
+    list_url: str                       # CrawlConfig.url과 매칭하는 키 (list 페이지 URL)
     id_param_name: str                  # URL 쿼리파라미터 이름 (예: "bbsNo")
     url_template: str                   # detail URL 템플릿 (예: "https://.../detail?menuNo=222&bbsNo={id}")
     error_marker: str                   # 에러 페이지 판별 문자열
@@ -221,26 +222,60 @@ async def crawl_bbs_detail_scan(
 # ── 사이트별 프로필 레지스트리 ─────────────────────────────
 
 
-PROFILES: dict[str, ScanProfile] = {
-    "FSI": ScanProfile(
+_FSI_TITLE_RE = re.compile(r"<h3>([^<]+)</h3>")
+_FSI_DATE_RE = re.compile(r'class="date"[^>]*>(\d{4}-\d{2}-\d{2})')
+_FSI_FILE_RE = re.compile(
+    r'fileNo="(\d+)"\s*[^>]*filePage="board"[^>]*>([^<]+)</a>',
+    re.DOTALL,
+)
+_FSI_DOWNLOAD_TPL = "https://www.fsec.or.kr/bbs/downloadFile?fileNo={file_id}&filePage=board"
+_FSI_ERROR = "요청하신 페이지에서 오류가 발생"
+
+PROFILES: list[ScanProfile] = [
+    # FSI 자료마당 가이드 (menuNo=222)
+    ScanProfile(
         agency_code="FSI",
+        list_url="https://www.fsec.or.kr/bbs/list?menuNo=222",
         id_param_name="bbsNo",
         url_template="https://www.fsec.or.kr/bbs/detail?menuNo=222&bbsNo={id}",
-        error_marker="요청하신 페이지에서 오류가 발생",
+        error_marker=_FSI_ERROR,
         title_section_marker="titleBox",
-        title_regex=re.compile(r"<h3>([^<]+)</h3>"),
-        date_regex=re.compile(r'class="date"[^>]*>(\d{4}-\d{2}-\d{2})'),
-        file_regex=re.compile(
-            r'fileNo="(\d+)"\s*[^>]*filePage="board"[^>]*>([^<]+)</a>',
-            re.DOTALL,
-        ),
-        file_download_template="https://www.fsec.or.kr/bbs/downloadFile?fileNo={file_id}&filePage=board",
+        title_regex=_FSI_TITLE_RE,
+        date_regex=_FSI_DATE_RE,
+        file_regex=_FSI_FILE_RE,
+        file_download_template=_FSI_DOWNLOAD_TPL,
         baseline_id=11900,
         scan_window=100,
     ),
-    # 향후 동일 패턴(JS list + SSR detail) 사이트 추가 시 여기 프로필 하나만 추가
-}
+    # FSI 알림마당 보도자료 (menuNo=69)
+    ScanProfile(
+        agency_code="FSI",
+        list_url="https://www.fsec.or.kr/bbs/list?menuNo=69",
+        id_param_name="bbsNo",
+        url_template="https://www.fsec.or.kr/bbs/detail?menuNo=69&bbsNo={id}",
+        error_marker=_FSI_ERROR,
+        title_section_marker="titleBox",
+        title_regex=_FSI_TITLE_RE,
+        date_regex=_FSI_DATE_RE,
+        file_regex=_FSI_FILE_RE,
+        file_download_template=_FSI_DOWNLOAD_TPL,
+        baseline_id=11500,
+        scan_window=200,
+    ),
+]
+
+
+def get_profile_by_url(agency_code: str, list_url: str) -> Optional[ScanProfile]:
+    """agency_code + list URL로 프로필 조회 (CrawlConfig.url과 매칭)."""
+    for p in PROFILES:
+        if p.agency_code == agency_code and p.list_url == list_url:
+            return p
+    return None
 
 
 def get_profile(agency_code: str) -> Optional[ScanProfile]:
-    return PROFILES.get(agency_code)
+    """하위 호환: agency_code로 첫 번째 프로필 반환."""
+    for p in PROFILES:
+        if p.agency_code == agency_code:
+            return p
+    return None
