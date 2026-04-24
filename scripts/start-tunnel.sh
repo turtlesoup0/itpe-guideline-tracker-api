@@ -1,13 +1,14 @@
 #!/bin/bash
-# Cloudflare Quick Tunnel + FastAPI 서버 시작 스크립트
-# launchd 또는 수동 실행용
+# Cloudflare Named Tunnel + FastAPI 서버 시작 스크립트.
+# 고정 도메인 (api.tech-insight.org) 사용 — 재시작해도 URL 불변.
+# launchd 또는 수동 실행용.
 
 set -e
 
 PROJECT_DIR="/Users/turtlesoup0-macmini/Projects/itpe-guideline-tracker-api"
-TUNNEL_LOG="/tmp/cloudflare-tunnel.log"
+TUNNEL_NAME="guideline-tracker-api"
 API_LOG="/tmp/guideline-api.log"
-TUNNEL_URL_FILE="/tmp/guideline-tracker-tunnel-url.txt"
+TUNNEL_LOG="/tmp/cloudflare-tunnel.log"
 
 cd "$PROJECT_DIR"
 
@@ -22,61 +23,24 @@ else
     echo "[$(date)] FastAPI already running on :8000"
 fi
 
-# 2. Cloudflare Tunnel 시작
-echo "[$(date)] Starting Cloudflare Tunnel..."
-cloudflared tunnel --url http://localhost:8000 > "$TUNNEL_LOG" 2>&1 &
+# 2. Cloudflare Named Tunnel 실행 (config: ~/.cloudflared/config.yml)
+echo "[$(date)] Starting Cloudflare Named Tunnel: $TUNNEL_NAME"
+cloudflared tunnel run "$TUNNEL_NAME" > "$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
-sleep 6
+sleep 4
 
-# 3. 터널 URL 추출
-TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" | head -1)
-
-if [ -n "$TUNNEL_URL" ]; then
-    # 이전 URL과 비교해서 변경됐을 때만 Vercel 동기화 (재배포 비용 절약)
-    PREV_URL=""
-    [ -f "$TUNNEL_URL_FILE" ] && PREV_URL=$(cat "$TUNNEL_URL_FILE")
-
-    echo "$TUNNEL_URL" > "$TUNNEL_URL_FILE"
-    echo "[$(date)] Tunnel URL: $TUNNEL_URL"
-    echo "[$(date)] URL saved to: $TUNNEL_URL_FILE"
-
-    # 헬스체크
-    if curl -s "$TUNNEL_URL/health" | grep -q "ok"; then
-        echo "[$(date)] Health check passed!"
-    else
-        echo "[$(date)] WARNING: Health check failed"
-    fi
-
-    # Vercel env 자동 동기화 (URL 변경 시 + vercel CLI 있을 때만)
-    if [ "$TUNNEL_URL" != "$PREV_URL" ] && command -v vercel >/dev/null 2>&1; then
-        echo "[$(date)] Vercel env 동기화 중 (이전: $PREV_URL)"
-        WEB_DIR="/Users/turtlesoup0-macmini/Projects/itpe-guideline-tracker-web"
-        if [ -d "$WEB_DIR" ]; then
-            (
-                cd "$WEB_DIR"
-                vercel env rm NEXT_PUBLIC_API_URL production --yes 2>/dev/null || true
-                printf "%s" "$TUNNEL_URL" | vercel env add NEXT_PUBLIC_API_URL production 2>&1 | tail -1
-                # 백그라운드로 재배포 (터널 기동 블로킹 방지)
-                nohup vercel --prod --cwd "$WEB_DIR" >/tmp/vercel-autodeploy.log 2>&1 &
-                echo "[$(date)] Vercel 재배포 백그라운드 시작 (로그: /tmp/vercel-autodeploy.log)"
-            )
-        fi
-    fi
+# 3. 헬스체크 (public URL로)
+PUBLIC_URL="https://api.tech-insight.org"
+if curl -s --max-time 15 "$PUBLIC_URL/health" | grep -q "ok"; then
+    echo "[$(date)] Named Tunnel health OK: $PUBLIC_URL"
 else
-    echo "[$(date)] ERROR: Could not extract tunnel URL"
-    cat "$TUNNEL_LOG"
-    exit 1
+    echo "[$(date)] WARNING: Named Tunnel 헬스체크 실패 (DNS 전파 대기 중일 수 있음)"
 fi
 
 echo "[$(date)] All services running. Tunnel PID: $TUNNEL_PID"
-echo ""
-echo "=== 프론트엔드 연결 ==="
-echo "Vercel 환경변수에 설정:"
-echo "  NEXT_PUBLIC_API_URL=$TUNNEL_URL"
-echo ""
-echo "터널 URL 확인: cat $TUNNEL_URL_FILE"
-echo "터널 로그: tail -f $TUNNEL_LOG"
-echo "API 로그: tail -f $API_LOG"
+echo "Public URL: $PUBLIC_URL"
+echo "Tunnel log: tail -f $TUNNEL_LOG"
+echo "API log:    tail -f $API_LOG"
 
 # 터널 프로세스 대기 (launchd용)
 wait $TUNNEL_PID
