@@ -229,8 +229,14 @@ def _build_category_rules() -> list[tuple[re.Pattern, "GuidelineCategory"]]:
     ]
 
 
-def auto_categorize(title: str) -> "GuidelineCategory":
-    """제목 기반 카테고리 자동 분류. 매칭 안 되면 OTHER."""
+def auto_categorize(title: str, agency_code: str | None = None) -> "GuidelineCategory":
+    """제목 기반 카테고리 자동 분류. 매칭 안 되면 기관 힌트로 fallback.
+
+    agency_code: 제목만으로 분류 안 될 때 기관 도메인을 힌트로 사용.
+      FSC(금융위), FSI(금융보안원) → FINANCE
+      KISA/NIS → INFO_SECURITY
+      PIPC → PRIVACY
+    """
     global _CATEGORY_RULES
     if not _CATEGORY_RULES:
         _CATEGORY_RULES = _build_category_rules()
@@ -240,6 +246,17 @@ def auto_categorize(title: str) -> "GuidelineCategory":
             return category
 
     from app.models.guideline import GuidelineCategory
+    # 기관 힌트 fallback
+    AGENCY_HINT = {
+        "FSC": GuidelineCategory.FINANCE,
+        "FSI": GuidelineCategory.FINANCE,
+        "KISA": GuidelineCategory.INFO_SECURITY,
+        "NIS": GuidelineCategory.INFO_SECURITY,
+        "PIPC": GuidelineCategory.PRIVACY,
+        "SPRI": GuidelineCategory.SOFTWARE,
+    }
+    if agency_code and agency_code in AGENCY_HINT:
+        return AGENCY_HINT[agency_code]
     return GuidelineCategory.OTHER
 
 
@@ -414,4 +431,116 @@ async def sync_crawl_results(
         "skipped": skipped_count,
         "filtered": filtered_count,
         "llm_classified": llm_classified_count,
+    }
+
+
+# ── 동기 버전 (Celery 태스크용) ──────────────────────────
+
+
+def sync_crawl_results_sync(
+    agency_id: int,
+    items: list[CrawledItem],
+    db,
+    *,
+    config_label: str = "",
+    agency_name: str = "",
+    config_item_type: str = "guideline",
+) -> dict:
+    """sync_crawl_results의 동기 버전 — Celery 동기 세션용.
+
+    LLM 분류는 생략(경계 케이스는 announcement 소스면 수용, guideline 소스면 스킵).
+    제목 기반 classify_title만 사용.
+    """
+    from app.models.guideline import Guideline, GuidelineVersion, ItemType
+
+    # 기존 Guideline 조회 (agency_id로 필터)
+    existing = db.query(Guideline).filter(Guideline.agency_id == agency_id).all()
+
+    url_index: dict[str, Guideline] = {g.source_url: g for g in existing if g.source_url}
+    title_index: dict[str, tuple[Guideline, set]] = {}
+    for g in existing:
+        title_index[normalize_title(g.title)] = (g, {v.published_date for v in g.versions})
+
+    target_type = (
+        ItemType.ANNOUNCEMENT if config_item_type == "announcement"
+        else ItemType.GUIDELINE
+    )
+
+    new_count = updated_count = skipped_count = filtered_count = 0
+
+    for item in items:
+        # 제목 기반 분류 (announcement 소스는 우회)
+        if config_item_type != "announcement":
+            c = classify_title(item.title)
+            if c is False:
+                filtered_count += 1
+                continue
+            if c is None:
+                # LLM 분류는 동기 컨텍스트에서 skip → 보수적으로 제외
+                filtered_count += 1
+                continue
+
+        # URL 중복 → item_type만 갱신
+        if item.url in url_index:
+            ex = url_index[item.url]
+            if ex.item_type != target_type:
+                ex.item_type = target_type
+            skipped_count += 1
+            continue
+
+        norm = normalize_title(item.title)
+        pdf_url = _find_pdf_url(item.attachment_urls)
+        version_label = extract_version_label(item.title)
+        pub_date = item.published_date or date.today()
+
+        # 같은 정규화 제목 있으면 버전 추가
+        if norm in title_index:
+            ex, dates = title_index[norm]
+            if pub_date in dates:
+                skipped_count += 1
+                continue
+            v = GuidelineVersion(
+                guideline_id=ex.id,
+                version_label=version_label,
+                published_date=pub_date,
+                pdf_url=pdf_url,
+                detected_at=datetime.now(),
+            )
+            db.add(v)
+            if ex.item_type != target_type:
+                ex.item_type = target_type
+            url_index[item.url] = ex
+            dates.add(pub_date)
+            updated_count += 1
+            continue
+
+        # 신규 Guideline
+        g = Guideline(
+            agency_id=agency_id,
+            title=item.title,
+            category=auto_categorize(item.title),
+            item_type=target_type,
+            source_url=item.url,
+            pdf_url=pdf_url,
+        )
+        db.add(g)
+        db.flush()
+        v = GuidelineVersion(
+            guideline_id=g.id,
+            version_label=version_label,
+            published_date=pub_date,
+            pdf_url=pdf_url,
+            detected_at=datetime.now(),
+        )
+        db.add(v)
+        url_index[item.url] = g
+        title_index[norm] = (g, {pub_date})
+        new_count += 1
+
+    db.commit()
+    return {
+        "new": new_count,
+        "updated": updated_count,
+        "skipped": skipped_count,
+        "filtered": filtered_count,
     }

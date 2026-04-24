@@ -133,6 +133,22 @@ def crawl_by_schedule(schedule: str) -> dict:
             try:
                 result: CrawlResult = _run_async(_run_crawl_config(config, agency_code))
 
+                # 크롤 성공 시 sync (동기 세션 기반)
+                sync_stats = {"new": 0, "updated": 0, "skipped": 0}
+                if result.success and result.items:
+                    try:
+                        from app.services.guideline_sync import sync_crawl_results_sync
+                        sync_stats = sync_crawl_results_sync(
+                            agency_id=config.agency_id,
+                            items=result.items,
+                            db=db,
+                            config_label=config.label,
+                            agency_name=config.agency.name,
+                            config_item_type=config.item_type,
+                        )
+                    except Exception as se:
+                        logger.warning(f"[sync] {agency_code}/{config.label} sync 실패: {se}")
+
                 # DB에 실행 이력 저장
                 run = CrawlRun(
                     agency_id=config.agency_id,
@@ -141,7 +157,7 @@ def crawl_by_schedule(schedule: str) -> dict:
                     started_at=result.started_at,
                     finished_at=result.finished_at or datetime.now(),
                     items_found=result.count,
-                    items_new=result.count,  # TODO: 기존 데이터와 diff
+                    items_new=sync_stats["new"] + sync_stats["updated"],
                     error_message=result.error,
                 )
                 db.add(run)
@@ -155,6 +171,8 @@ def crawl_by_schedule(schedule: str) -> dict:
                     "config": config.label,
                     "success": result.success,
                     "items": result.count,
+                    "new": sync_stats["new"],
+                    "updated": sync_stats["updated"],
                     "error": result.error,
                 })
 
