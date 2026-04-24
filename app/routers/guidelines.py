@@ -30,6 +30,28 @@ from app.models.guideline import (
 router = APIRouter(tags=["guidelines"])
 
 
+# ── 수집 키워드 공개 엔드포인트 (프론트에서 투명성 표시용) ──
+
+
+@router.get("/meta/keywords")
+async def get_collection_keywords() -> dict:
+    """가이드라인/보도자료 수집에 사용되는 키워드 목록.
+
+    프론트엔드 (?) 아이콘 등에서 노출하여 수집 기준을 공개.
+    """
+    from app.crawlers.registry import GUIDELINE_KEYWORDS, ANNOUNCEMENT_KEYWORDS
+    return {
+        "guideline": {
+            "description": "가이드라인/안내서/매뉴얼 관련 게시판에서 사용하는 키워드",
+            "keywords": GUIDELINE_KEYWORDS,
+        },
+        "announcement": {
+            "description": "보도자료/공지사항 게시판에서 가이드라인·법령 발표성 글만 필터링하는 키워드",
+            "keywords": ANNOUNCEMENT_KEYWORDS,
+        },
+    }
+
+
 # ── Response schemas ─────────────────────────────────────
 
 
