@@ -196,30 +196,36 @@ def _build_category_rules() -> list[tuple[re.Pattern, "GuidelineCategory"]]:
     from app.models.guideline import GuidelineCategory as GC
 
     return [
-        # AI (가장 먼저 — AI 키워드가 다른 도메인과 겹치는 경우 우선)
-        (re.compile(r"인공지능|AI\b|자율주행|로봇|드론|지능정보|LLM|생성형|메타버스", re.I), GC.AI),
+        # 금융 (자본시장/신용정보/ETF 등 금융 관련은 최우선 — 다른 키워드와 겹치는 경우 많음)
+        (re.compile(
+            r"전자금융|금융보안|핀테크|자본시장|신용정보|ETF|ELS|IPO|코너스톤|"
+            r"상장|증권|채무조정|공모주|펀드|자산운용|보험|은행|여신|대출|"
+            r"금융기관|금융회사|금융규제|금융투자|금융감독"
+        ), GC.FINANCE),
+        # AI (AI 키워드가 다른 도메인과 겹치는 경우 우선 — 단 '금융AI'는 위에서 이미 매칭)
+        (re.compile(r"인공지능|AI\b|AI[가-힣]|자율주행|로봇|드론|지능정보|LLM|생성형|메타버스|머신러닝|딥러닝", re.I), GC.AI),
         # 개인정보
         (re.compile(r"개인정보|프라이버시|가명정보|가명.*익명|영상정보|CCTV|생체정보|마이데이터|CPO|위치정보|접근배제|정보주체"), GC.PRIVACY),
-        # 정보보안
+        # 정보보안 (해운·항만·기반시설 보안 포함)
         (re.compile(
             r"정보보호|정보보안|사이버|보안모델|취약점|침해|제로트러스트|ISMS|"
             r"암호|시큐어코딩|보안약점|OWASP|CSAP|IoT|보안가이드|"
-            r"보안취약|보안인증|보안업무|보안관리|통신비밀|주요정보통신기반"
+            r"보안취약|보안인증|보안업무|보안관리|통신비밀|주요정보통신기반|"
+            r"해운.*보안|항만.*보안|기반시설.*보안|포렌식|악성|랜섬|해킹"
         ), GC.INFO_SECURITY),
         # 클라우드
         (re.compile(r"클라우드|Cloud|SaaS|PaaS|IaaS"), GC.CLOUD),
         # 소프트웨어
-        (re.compile(r"소프트웨어|SW\s|SW사업|대가산정|개발보안|공개SW|영향평가|ISP|ISMP"), GC.SOFTWARE),
+        (re.compile(r"소프트웨어|SW\s|SW사업|SW융합|대가산정|개발보안|공개SW|영향평가|ISP|ISMP|프로젝트\s*규모|오토파일럿|SW안전"), GC.SOFTWARE),
         # 데이터
-        (re.compile(r"데이터|빅데이터|공공데이터|품질관리\s*지침"), GC.DATA),
+        (re.compile(r"데이터|빅데이터|공공데이터|품질관리\s*지침|블록체인|전력거래"), GC.DATA),
         # 전자정부
         (re.compile(
             r"전자정부|정보시스템|감리|정보화|웹사이트|UI/UX|표준운영|"
             r"정보자원|코드표준|스마트워크|모바일.*서비스|전자민원|"
-            r"스마트빌리지|영상회의|인터넷전화|정보통신서비스|GNS"
+            r"스마트빌리지|영상회의|인터넷전화|정보통신서비스|GNS|"
+            r"디지털\s*(정부|공공|서비스|포용|혁신|전환)|공공기관|행정"
         ), GC.E_GOV),
-        # 금융
-        (re.compile(r"전자금융|금융보안|핀테크|금융"), GC.FINANCE),
     ]
 
 
