@@ -199,6 +199,10 @@ async def list_guidelines(
 async def list_recent_changes(
     days: int = Query(30, ge=1, le=365, description="최근 N일 이내"),
     agency_code: str | None = Query(None, description="기관 코드 필터"),
+    item_type: ItemType | None = Query(
+        ItemType.GUIDELINE,
+        description="기본값: guideline (실제 가이드라인 개정이력만). 전체 보려면 '' 전달",
+    ),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
@@ -230,6 +234,8 @@ async def list_recent_changes(
 
     if agency_code:
         stmt = stmt.where(Agency.code == agency_code.upper())
+    if item_type:
+        stmt = stmt.where(Guideline.item_type == item_type)
 
     result = await db.execute(stmt)
     rows = result.all()
@@ -265,9 +271,17 @@ async def list_recent_changes(
     else:
         ver_count_map = {}
 
+    # 의미 있는 개정 판정 기준:
+    # - 이전 버전과 7일 이상 간격, 또는
+    # - version_label이 다름 (예: v1 → v2)
+    # 그 외는 "재게시"로 취급 (change_type="new"로 처리해도 좋지만
+    # 이 경우 단순 reshow라 가장 최근 버전만 한 번 나오게 함 — out에서 중복 억제)
+
+    MIN_UPDATE_GAP_DAYS = 7
+
     out = []
     for ver, gl, agency_code_val, agency_name, _ in rows:
-        # 이전 버전 찾기: 이 ver의 published_date보다 과거 중 가장 최근
+        # 이전 버전 찾기
         prev_pd = None
         prev_vl = None
         for pd, vl in version_history.get(gl.id, []):
@@ -275,19 +289,39 @@ async def list_recent_changes(
                 prev_pd = pd
                 prev_vl = vl
                 break
+
+        # 의미 있는 개정인지 판단
+        is_meaningful_update = False
+        if prev_pd is not None:
+            gap_days = (ver.published_date - prev_pd).days
+            label_changed = (prev_vl or "") != (ver.version_label or "")
+            if gap_days >= MIN_UPDATE_GAP_DAYS or label_changed:
+                is_meaningful_update = True
+
+        version_count = ver_count_map.get(gl.id, 1)
+
+        if version_count == 1:
+            change_type = "new"
+        elif is_meaningful_update:
+            change_type = "updated"
+        else:
+            # multi-version이지만 의미 없는 중복 (같은 게시물 재수집)
+            # 해당 항목은 출력 skip
+            continue
+
         out.append({
             "guideline_id": gl.id,
             "title": gl.title,
             "agency_code": agency_code_val,
             "agency_name": agency_name,
             "category": gl.category.value if hasattr(gl.category, "value") else gl.category,
-            "change_type": "new" if ver_count_map.get(gl.id, 1) == 1 else "updated",
+            "change_type": change_type,
             "version_label": ver.version_label,
             "published_date": ver.published_date,
             "previous_published_date": prev_pd,
             "previous_version_label": prev_vl,
             "detected_at": ver.detected_at,
-            "version_count": ver_count_map.get(gl.id, 1),
+            "version_count": version_count,
         })
     return out
 
