@@ -50,6 +50,8 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://localhost:3001",
         "https://itpe-guideline-tracker-web.vercel.app",
+        "https://guideline-tracker.tech-insight.org",
+        "https://law-tracker.tech-insight.org",
     ]
 
 
