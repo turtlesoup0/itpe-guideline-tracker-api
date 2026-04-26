@@ -13,14 +13,14 @@ TUNNEL_LOG="/tmp/cloudflare-tunnel.log"
 cd "$PROJECT_DIR"
 
 # 1. FastAPI 서버 시작 (이미 실행 중이면 스킵)
-if ! lsof -i :8000 -t >/dev/null 2>&1; then
+if ! lsof -i :8001 -t >/dev/null 2>&1; then
     echo "[$(date)] Starting FastAPI server..."
     source .venv/bin/activate
-    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload > "$API_LOG" 2>&1 &
+    uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload > "$API_LOG" 2>&1 &
     sleep 3
     echo "[$(date)] FastAPI started (PID: $!)"
 else
-    echo "[$(date)] FastAPI already running on :8000"
+    echo "[$(date)] FastAPI already running on :8001"
 fi
 
 # 2. Cloudflare Named Tunnel 실행 (config: ~/.cloudflared/config.yml)
