@@ -163,9 +163,11 @@ _NIS_AF_DATE = re.compile(r'등록일자.*?(\d{4}-\d{2}-\d{2})', re.DOTALL)
 
 # MSIT AI 기본법 가이드라인 (KOSA AI 기본법 지원데스크 통합 페이지)
 # 페이지 구조: <a class="guide-item" href="...Download.do?cfIdx=CFxxxxx..."><span>제목</span></a>
+# 주의: KOSA WAF는 cfRename 파라미터 없는 download 요청을 차단 → 전체 URL 캡처 필요.
 _MSIT_AI_BLOCK_SPLITTER = re.compile(r'(?=<a[^>]*class="guide-item")')
 _MSIT_AI_TITLE = re.compile(r'<span>([^<]+(?:<br\s*/?>[^<]+|</br>[^<]+)*)</span>')
-_MSIT_AI_SEQ = re.compile(r'cfIdx=(CF\d+)')
+# seq_regex가 full download URL을 group(1)로 캡처 (cfIdx + cfGroup + cfRename 모두 포함)
+_MSIT_AI_SEQ = re.compile(r'href="(https://www\.sw\.or\.kr/common/files/Download\.do\?[^"]+)"')
 
 PROFILES: dict[str, list[StaticPubsProfile]] = {
     "NIS": [
@@ -188,7 +190,8 @@ PROFILES: dict[str, list[StaticPubsProfile]] = {
             block_splitter=_MSIT_AI_BLOCK_SPLITTER,
             title_regex=_MSIT_AI_TITLE,
             seq_regex=_MSIT_AI_SEQ,
-            download_url_template="https://www.sw.or.kr/common/files/Download.do?cfIdx={seq}&cfGroup=COMMON",
+            # seq에 full URL이 들어오므로 그대로 사용
+            download_url_template="{seq}",
         ),
     ],
     # 향후 동일 패턴 사이트 추가 시 여기에 프로필 추가
