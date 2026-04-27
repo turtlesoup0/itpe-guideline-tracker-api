@@ -112,6 +112,15 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="weekly",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
+            # AI 기본법(2026.01.22 시행) 가이드라인 5종 — KOSA 통합 페이지에서 수집
+            # 투명성/안전성/고영향 판단/사업자 책무/영향평가
+            CrawlTarget(
+                label="AI 기본법 가이드라인 (KOSA 통합)",
+                source_type="bbs_list",  # static_pubs 모듈로 라우팅 (URL 매칭)
+                url="https://www.sw.or.kr/AI_act_helpdesk/main.jsp",
+                schedule="weekly",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
         ],
     ),
     # ─────────────────────────────────────────────────────

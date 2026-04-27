@@ -101,7 +101,10 @@ async def crawl_static_pubs(
         if not title_m or not seq_m:
             continue
 
-        title = title_m.group(1).strip()
+        # 제목 정제: <br>, </br>, 다중 공백 정규화
+        raw_title = title_m.group(1)
+        title = re.sub(r"</?br\s*/?>", " ", raw_title)
+        title = re.sub(r"\s+", " ", title).strip()
         seq = seq_m.group(1).strip()
         if not title or not seq or seq in seen_seq:
             continue
@@ -158,6 +161,12 @@ _NIS_AF_TITLE = re.compile(r'<img[^>]*class="border-gray01"[^>]*alt="([^"]+)"')
 _NIS_AF_SEQ = re.compile(r'href="/common/download\.do\?seq=([A-F0-9]+)"')
 _NIS_AF_DATE = re.compile(r'등록일자.*?(\d{4}-\d{2}-\d{2})', re.DOTALL)
 
+# MSIT AI 기본법 가이드라인 (KOSA AI 기본법 지원데스크 통합 페이지)
+# 페이지 구조: <a class="guide-item" href="...Download.do?cfIdx=CFxxxxx..."><span>제목</span></a>
+_MSIT_AI_BLOCK_SPLITTER = re.compile(r'(?=<a[^>]*class="guide-item")')
+_MSIT_AI_TITLE = re.compile(r'<span>([^<]+(?:<br\s*/?>[^<]+|</br>[^<]+)*)</span>')
+_MSIT_AI_SEQ = re.compile(r'cfIdx=(CF\d+)')
+
 PROFILES: dict[str, list[StaticPubsProfile]] = {
     "NIS": [
         StaticPubsProfile(
@@ -169,6 +178,17 @@ PROFILES: dict[str, list[StaticPubsProfile]] = {
             seq_regex=_NIS_AF_SEQ,
             date_regex=_NIS_AF_DATE,
             download_url_template="https://www.nis.go.kr:4016/common/download.do?seq={seq}",
+        ),
+    ],
+    "MSIT": [
+        StaticPubsProfile(
+            agency_code="MSIT",
+            config_label="AI 기본법 가이드라인 (KOSA 통합)",
+            url="https://www.sw.or.kr/AI_act_helpdesk/main.jsp",
+            block_splitter=_MSIT_AI_BLOCK_SPLITTER,
+            title_regex=_MSIT_AI_TITLE,
+            seq_regex=_MSIT_AI_SEQ,
+            download_url_template="https://www.sw.or.kr/common/files/Download.do?cfIdx={seq}&cfGroup=COMMON",
         ),
     ],
     # 향후 동일 패턴 사이트 추가 시 여기에 프로필 추가
