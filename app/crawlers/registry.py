@@ -187,6 +187,14 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="monthly",
                 keyword_filter=GUIDELINE_KEYWORDS,
             ),
+            # NCSC 지침 게시판 — 국가사이버보안기본지침 등 핵심 지침 발행처
+            CrawlTarget(
+                label="NCSC 지침",
+                source_type="bbs_list",
+                url="https://www.ncsc.go.kr:4018/main/cop/bbs/selectBoardList.do?bbsId=InstructionGuide_main",
+                schedule="weekly",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
             # 국정원 보도자료 — 표준 BBS
             CrawlTarget(
                 label="국정원 보도자료",
