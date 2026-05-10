@@ -385,16 +385,39 @@ AGENCY_SEEDS: list[AgencySeed] = [
     # ─────────────────────────────────────────────────────
     # 11. 한국정보통신기술협회 (TTA)
     # ─────────────────────────────────────────────────────
-    # NOTE: TTA 신 사이트는 Next.js SPA + API Key 인증 필요 → 자동 크롤 불가.
-    # 구 JSP/DO 페이지는 410 Gone. AI 기본법 가이드라인은 이미 MSIT/KOSA 통합
-    # 페이지에서 수집됨. 기관 등록만 두고 향후 API key 확보 시 활성화.
+    # TTA 신 사이트는 Next.js SPA — Playwright headless로 렌더링 후 수집.
+    # 셀렉터/wait는 app/crawlers/playwright_bbs.py PROFILES에서 관리.
     AgencySeed(
         code="TTA",
         name="한국정보통신기술협회",
         short_name="TTA",
         homepage_url="https://www.tta.or.kr",
         description="ICT 표준 제정, AI 표준 평가, 표준화 가이드라인 발행. AI 기본법 지원기관.",
-        targets=[],  # 자동 수집 경로 미확보 — 향후 활성화 예정
+        targets=[
+            CrawlTarget(
+                label="보도자료",
+                source_type="bbs_list",  # dispatcher가 agency+url로 Playwright 라우팅
+                url="https://www.tta.or.kr/tta/selectBbsNttList?bbsNo=22&key=11",
+                schedule="weekly",
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",
+            ),
+            CrawlTarget(
+                label="공지사항",
+                source_type="bbs_list",
+                url="https://www.tta.or.kr/tta/selectBbsNttList?bbsNo=20&key=10",
+                schedule="weekly",
+                keyword_filter=ANNOUNCEMENT_KEYWORDS,
+                item_type="announcement",
+            ),
+            CrawlTarget(
+                label="TTA 간행물 (Journal)",
+                source_type="bbs_list",
+                url="https://www.tta.or.kr/tta/selectBbsNttList?bbsNo=24&key=12",
+                schedule="monthly",
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
+        ],
     ),
     # ─────────────────────────────────────────────────────
     # 10. 금융보안원 (FSI)

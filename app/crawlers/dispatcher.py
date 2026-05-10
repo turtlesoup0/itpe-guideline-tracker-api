@@ -49,6 +49,15 @@ async def run_crawl_config(config: CrawlConfig, agency_code: str) -> CrawlResult
             config_label=config.label,
         )
 
+    # 2-b. Playwright (SPA 사이트, list+detail 모두 JS 렌더링)
+    from app.crawlers.playwright_bbs import (
+        crawl_playwright_bbs,
+        get_profile_by_url as get_pw_profile,
+    )
+    pw_profile = get_pw_profile(agency_code, config.url)
+    if pw_profile is not None:
+        return await crawl_playwright_bbs(pw_profile, keyword_filter=keyword_list)
+
     # 3. RSS
     if config.source_type == CrawlSourceType.RSS:
         crawler = RssCrawler(
