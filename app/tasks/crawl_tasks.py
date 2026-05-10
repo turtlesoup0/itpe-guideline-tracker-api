@@ -49,40 +49,9 @@ def _get_sync_session():
 
 
 async def _run_crawl_config(config: CrawlConfig, agency_code: str) -> CrawlResult:
-    """CrawlConfig에 따라 적절한 크롤러를 실행합니다."""
-    keyword_list = config.keyword_filter.split(",") if config.keyword_filter else []
-
-    if config.source_type == CrawlSourceType.RSS:
-        crawler = RssCrawler(
-            agency_code=agency_code,
-            feed_url=config.url,
-            keyword_filter=keyword_list,
-            config_label=config.label,
-        )
-    elif config.source_type == CrawlSourceType.BBS_LIST:
-        crawler = BbsCrawler(
-            agency_code=agency_code,
-            base_url=config.url,
-            list_selector=config.list_selector,
-            title_selector=config.title_selector,
-            date_selector=config.date_selector,
-            link_selector=config.link_selector,
-            pagination_param=config.pagination_param,
-            max_pages=config.max_pages,
-            keyword_filter=keyword_list,
-            config_label=config.label,
-        )
-    else:
-        return CrawlResult(
-            agency_code=agency_code,
-            config_label=config.label,
-            started_at=datetime.now(),
-            finished_at=datetime.now(),
-            error=f"Unsupported source type: {config.source_type}",
-        )
-
-    async with crawler:
-        return await crawler.crawl()
+    """Celery 태스크용 dispatcher 위임 — API 라우터와 동일 라우팅 보장."""
+    from app.crawlers.dispatcher import run_crawl_config
+    return await run_crawl_config(config, agency_code)
 
 
 def _run_async(coro):

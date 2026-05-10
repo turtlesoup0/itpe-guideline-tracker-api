@@ -56,63 +56,9 @@ class CrawlStatusOut(BaseModel):
 
 
 async def _run_config(config: CrawlConfig, agency_code: str) -> CrawlResult:
-    """CrawlConfig에 따라 적절한 크롤러를 실행합니다."""
-    keyword_list = config.keyword_filter.split(",") if config.keyword_filter else []
-
-    # Static Publications Page — 단일 URL에 발간자료 다수 나열된 구조
-    # (config.url이 프로필의 url과 일치하면 라우팅)
-    from app.crawlers.static_pubs import get_profiles as get_static_pubs_profiles
-    from app.crawlers.static_pubs import crawl_static_pubs
-    for pub_profile in get_static_pubs_profiles(agency_code):
-        if config.url == pub_profile.url:
-            return await crawl_static_pubs(pub_profile, keyword_filter=keyword_list)
-
-    # BBS Detail Scan 모듈 — list는 JS 렌더링 + detail SSR인 사이트용
-    # CrawlConfig.url로 정확히 매칭되는 프로필이 있으면 해당 크롤러로 라우팅
-    from app.crawlers.bbs_detail_scan import get_profile_by_url, crawl_bbs_detail_scan
-    profile = get_profile_by_url(agency_code, config.url)
-    if profile is not None:
-        return await crawl_bbs_detail_scan(
-            profile=profile,
-            keyword_filter=keyword_list,
-            config_label=config.label,
-        )
-
-    if config.source_type == CrawlSourceType.RSS:
-        crawler = RssCrawler(
-            agency_code=agency_code,
-            feed_url=config.url,
-            keyword_filter=keyword_list,
-            config_label=config.label,
-        )
-    elif config.source_type == CrawlSourceType.BBS_LIST:
-        crawler = BbsCrawler(
-            agency_code=agency_code,
-            base_url=config.url,
-            list_selector=config.list_selector,
-            title_selector=config.title_selector,
-            date_selector=config.date_selector,
-            link_selector=config.link_selector,
-            pagination_param=config.pagination_param,
-            max_pages=config.max_pages,
-            keyword_filter=keyword_list,
-            config_label=config.label,
-        )
-    elif config.source_type == CrawlSourceType.LAW_API:
-        from app.crawlers.law_api import crawl_admin_rules
-
-        return await crawl_admin_rules(agency_code)
-    else:
-        return CrawlResult(
-            agency_code=agency_code,
-            config_label=config.label,
-            started_at=datetime.now(),
-            finished_at=datetime.now(),
-            error=f"Unsupported source type: {config.source_type}",
-        )
-
-    async with crawler:
-        return await crawler.crawl()
+    """CrawlConfig를 dispatcher로 위임."""
+    from app.crawlers.dispatcher import run_crawl_config
+    return await run_crawl_config(config, agency_code)
 
 
 def _result_to_out(result: CrawlResult) -> CrawlResultOut:

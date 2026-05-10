@@ -151,13 +151,21 @@ async def _fetch_one(
     sequence_id: int,
     profile: ScanProfile,
 ) -> Optional[CrawledItem]:
-    """단일 ID의 detail 페이지 fetch + 파싱."""
+    """단일 ID의 detail 페이지 fetch + 파싱.
+
+    일부 사이트(예: FSI)는 정상 콘텐츠를 반환하면서도 HTTP 400을 보냄 →
+    status 무시하고 본문 마커 기준으로 판정.
+    """
     url = profile.url_template.format(id=sequence_id)
     try:
         res = await client.get(url)
-        if res.status_code != 200:
+        # status 무관 본문 검증 — error_marker 없고 title_section_marker 있으면 정상
+        text = res.text
+        if profile.error_marker and profile.error_marker in text:
             return None
-        return _parse_with_profile(res.text, sequence_id, profile)
+        if profile.title_section_marker and profile.title_section_marker not in text:
+            return None
+        return _parse_with_profile(text, sequence_id, profile)
     except Exception as e:
         logger.debug(f"[{profile.agency_code}] id={sequence_id} fetch 실패: {e}")
         return None
