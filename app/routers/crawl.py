@@ -118,6 +118,7 @@ async def crawl_agency(
                 config_label=config.label,
                 agency_name=agency.name,
                 config_item_type=config.item_type,
+                agency_code=agency.code,
             )
 
         # DB에 실행 이력 저장 (items_new = 실제 신규 가이드라인 수)

@@ -151,6 +151,69 @@ def classify_title(title: str) -> bool | None:
     return None
 
 
+# ── IT 도메인 관련성 필터 ────────────────────────────────
+# 제목이 IT/정보보안/디지털 도메인과 무관하면 수집 제외.
+# 키워드 매칭("운영지침" 등)만으로 비IT 행정문서가 수집되는 것을 방지.
+
+# 포괄적 IT 도메인 키워드 (하나라도 있으면 IT 관련으로 간주)
+_IT_DOMAIN_RE = re.compile(
+    r"정보보호|정보보안|사이버|개인정보|정보주체|가명정보|익명정보|영상정보|생체정보|"
+    r"CCTV|위치정보|접근배제|자동화된\s*결정|프라이버시|"
+    r"데이터|빅데이터|메타데이터|"
+    r"정보통신|통신|방송|전파|주파수|네트워크|망|인터넷|"
+    r"소프트웨어|SW|시큐어코딩|코딩|개발보안|보안약점|오픈소스|공개SW|"
+    r"클라우드|Cloud|SaaS|PaaS|IaaS|"
+    r"인공지능|AI|머신러닝|딥러닝|LLM|생성형|알고리즘|자율주행|로봇|드론|"
+    r"전자정부|정보시스템|정보화|정보자원|전자문서|전자서명|전자민원|"
+    r"디지털|ICT|IT\b|스마트|모바일|앱\b|플랫폼|"
+    r"보안|암호|인증|침해|취약점|해킹|악성|랜섬|포렌식|관제|"
+    r"제로트러스트|ISMS|ISMP|ISP|CSAP|N2SF|OT\b|IoT|블록체인|지능정보|"
+    r"전자금융|금융보안|핀테크|망분리|"
+    r"양자|반도체|우주.*보안|코드표준|표준규격|표준화|영상회의|인터넷전화|"
+    r"키오스크|디지털배움|정보격차|디지털포용",
+    re.I,
+)
+
+# 명백한 비IT 행정/정책 패턴 (모든 기관 공통 제외)
+_NON_IT_RE = re.compile(
+    r"법정민원|자원봉사|고유가|피해지원금|간첩|"
+    r"청렴도|공무원\s*행동강령|보수규정|당직|비상근무|"
+    r"회계관계공무원|관직지정|공무국외출장|이해충돌|부패신고|공익신고|"
+    r"성희롱|성폭력|스토킹|행동강령|민원행정서비스헌장|기록물\s*관리|"
+    r"비영리법인|소관\s*비영리|국민제안|제안\s*운영"
+)
+
+# 금융위(FSC) 일반 규제 — IT/보안 무관한 금융 정책 (제외 대상)
+_FINANCE_NONIT_RE = re.compile(
+    r"자본시장|대부업|여신전문|상장폐지|상장규정|증권|공모주|코너스톤|"
+    r"펀드|자산운용|집무규칙|감독규정|운영규칙|업감독|투자자\s*유의|"
+    r"ETF|ETN|레버리지|인버스|채무조정|신용정보법|불법사금융|"
+    r"금융투자업|보험업|은행업|포용금융|서민금융|금융생활"
+)
+
+
+def is_it_relevant(title: str, agency_code: str | None = None) -> bool:
+    """제목이 IT/정보보안 도메인과 관련 있는지 판별.
+
+    - 명백한 비IT 행정 패턴 → False
+    - 금융위(FSC): 금융 일반규제 패턴이면서 IT 키워드 없으면 → False
+    - IT 도메인 키워드 있으면 → True
+    - 그 외: 보수적으로 True (false negative 방지)
+    """
+    # 1) 명백한 비IT 행정 문서
+    if _NON_IT_RE.search(title):
+        return False
+
+    has_it = bool(_IT_DOMAIN_RE.search(title))
+
+    # 2) 금융위: 금융 일반규제 + IT 무관 → 제외
+    if agency_code == "FSC":
+        if _FINANCE_NONIT_RE.search(title) and not has_it:
+            return False
+
+    return True
+
+
 # ── 발표/보도 패턴 (item_type=announcement 판별) ──
 # 제목에 가이드라인 키워드가 있어도 "발표/공고/보도자료"성 제목이면
 # 실제 문서가 아닌 보도성 게시물로 분류.
@@ -271,6 +334,7 @@ async def sync_crawl_results(
     config_label: str = "",
     agency_name: str = "",
     config_item_type: str = "guideline",
+    agency_code: str = "",
 ) -> dict:
     """크롤링 결과를 Guideline + GuidelineVersion으로 변환·저장합니다.
 
@@ -310,7 +374,12 @@ async def sync_crawl_results(
     llm_classified_count = 0
 
     for item in items:
-        # 0) 가이드라인 분류는 guideline 소스에만 적용.
+        # 0) IT 도메인 관련성 — 비IT 행정/정책 문서 제외 (모든 소스 공통)
+        if not is_it_relevant(item.title, agency_code):
+            filtered_count += 1
+            continue
+
+        # 0-2) 가이드라인 분류는 guideline 소스에만 적용.
         #    announcement 소스(보도자료·공지사항)는 해당 게시판 자체가 이미 보도성
         #    맥락이므로 제목 기반 재분류는 스킵하고, 크롤러의 키워드 필터만 신뢰.
         if config_item_type == "announcement":
@@ -403,7 +472,7 @@ async def sync_crawl_results(
         guideline = Guideline(
             agency_id=agency_id,
             title=item.title,
-            category=auto_categorize(item.title),
+            category=auto_categorize(item.title, agency_code or None),
             item_type=target_type,
             source_url=item.url,
             pdf_url=pdf_url,
@@ -445,6 +514,7 @@ def sync_crawl_results_sync(
     config_label: str = "",
     agency_name: str = "",
     config_item_type: str = "guideline",
+    agency_code: str = "",
 ) -> dict:
     """sync_crawl_results의 동기 버전 — Celery 동기 세션용.
 
@@ -469,6 +539,11 @@ def sync_crawl_results_sync(
     new_count = updated_count = skipped_count = filtered_count = 0
 
     for item in items:
+        # IT 도메인 관련성 — 비IT 행정/정책 문서 제외
+        if not is_it_relevant(item.title, agency_code):
+            filtered_count += 1
+            continue
+
         # 제목 기반 분류 (announcement 소스는 우회)
         if config_item_type != "announcement":
             c = classify_title(item.title)
@@ -518,7 +593,7 @@ def sync_crawl_results_sync(
         g = Guideline(
             agency_id=agency_id,
             title=item.title,
-            category=auto_categorize(item.title),
+            category=auto_categorize(item.title, agency_code or None),
             item_type=target_type,
             source_url=item.url,
             pdf_url=pdf_url,

@@ -114,6 +114,7 @@ def crawl_by_schedule(schedule: str) -> dict:
                             config_label=config.label,
                             agency_name=config.agency.name,
                             config_item_type=config.item_type,
+                            agency_code=agency_code,
                         )
                     except Exception as se:
                         logger.warning(f"[sync] {agency_code}/{config.label} sync 실패: {se}")
