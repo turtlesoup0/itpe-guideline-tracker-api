@@ -403,11 +403,23 @@ async def sync_crawl_results(
                 fps.add(fp)
         title_index[norm] = (g, dates, fps)
 
+    # 전역 content_hash 인덱스 (모든 기관 교차 — 동일 PDF 다른 출처 탐지)
+    # hash → guideline_id (가장 먼저 수집된 원본)
+    hash_index: dict[str, int] = {}
+    hv_result = await db.execute(
+        select(GuidelineVersion.content_hash, GuidelineVersion.guideline_id)
+        .where(GuidelineVersion.content_hash.isnot(None))
+        .order_by(GuidelineVersion.id)
+    )
+    for h, gid in hv_result.all():
+        hash_index.setdefault(h, gid)
+
     new_count = 0
     updated_count = 0
     skipped_count = 0
     filtered_count = 0
     llm_classified_count = 0
+    duplicate_count = 0
 
     for item in items:
         # 0) IT 도메인 관련성 — 비IT 행정/정책 문서 제외 (모든 소스 공통)
@@ -496,11 +508,26 @@ async def sync_crawl_results(
                 skipped_count += 1
                 continue
 
+            # 새 버전 후보 — PDF 해시 계산 (동일 hash면 같은 문서, 버전 추가 안 함)
+            ver_hash: str | None = None
+            if pdf_url:
+                from app.services.pdf_hash import fetch_pdf_sha256
+                ver_hash = await fetch_pdf_sha256(pdf_url)
+                # 이 가이드라인의 기존 버전 hash와 같으면 동일 문서 → 스킵
+                if ver_hash:
+                    existing_hashes = {
+                        v.content_hash for v in existing.versions if v.content_hash
+                    }
+                    if ver_hash in existing_hashes:
+                        skipped_count += 1
+                        continue
+
             new_version = GuidelineVersion(
                 guideline_id=existing.id,
                 version_label=version_label,
                 published_date=pub_date,
                 pdf_url=pdf_url,
+                content_hash=ver_hash,
                 detected_at=datetime.now(),
             )
             db.add(new_version)
@@ -512,10 +539,20 @@ async def sync_crawl_results(
             existing_dates.add(pub_date)
             if new_fp:
                 existing_fps.add(new_fp)
+            if ver_hash:
+                hash_index.setdefault(ver_hash, existing.id)
             updated_count += 1
             continue
 
-        # 3) 신규 가이드라인 생성 — 소스(CrawlConfig)의 item_type 사용 (target_type 위에서 결정)
+        # 3) 신규 가이드라인 — PDF 해시로 교차출처 중복 판정
+        content_h: str | None = None
+        dup_of: int | None = None
+        if pdf_url:
+            from app.services.pdf_hash import fetch_pdf_sha256
+            content_h = await fetch_pdf_sha256(pdf_url)
+            if content_h and content_h in hash_index:
+                dup_of = hash_index[content_h]  # 동일 PDF 원본 id
+
         guideline = Guideline(
             agency_id=agency_id,
             title=item.title,
@@ -523,6 +560,7 @@ async def sync_crawl_results(
             item_type=target_type,
             source_url=item.url,
             pdf_url=pdf_url,
+            duplicate_of_id=dup_of,
         )
         db.add(guideline)
         await db.flush()  # id 확보
@@ -532,6 +570,7 @@ async def sync_crawl_results(
             version_label=version_label,
             published_date=pub_date,
             pdf_url=pdf_url,
+            content_hash=content_h,
             detected_at=datetime.now(),
         )
         db.add(first_version)
@@ -542,6 +581,14 @@ async def sync_crawl_results(
         title_index[norm_title] = (
             guideline, {pub_date}, {_new_fp} if _new_fp else set(),
         )
+        if content_h:
+            hash_index.setdefault(content_h, guideline.id)
+        if dup_of:
+            duplicate_count += 1
+            logger.info(
+                "[dedup] 교차출처 중복: '%s' (guideline %d) == 원본 %d",
+                item.title[:50], guideline.id, dup_of,
+            )
         new_count += 1
 
     return {
@@ -550,6 +597,7 @@ async def sync_crawl_results(
         "skipped": skipped_count,
         "filtered": filtered_count,
         "llm_classified": llm_classified_count,
+        "duplicate": duplicate_count,
     }
 
 

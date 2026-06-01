@@ -145,6 +145,13 @@ class Guideline(Base, TimestampMixin):
     source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="원문 게시 URL")
     pdf_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="PDF 다운로드 URL")
 
+    # 중복 콘텐츠 — 다른 기관/게시물이 동일 PDF(content_hash)를 올린 경우,
+    # 가장 먼저 수집된 Guideline.id를 가리킨다 (None이면 원본 또는 유일).
+    duplicate_of_id: Mapped[int | None] = mapped_column(
+        ForeignKey("guidelines.id"), nullable=True,
+        comment="동일 콘텐츠(PDF 해시 일치)의 원본 가이드라인 id"
+    )
+
     # Relations
     mandate: Mapped["Mandate | None"] = relationship(back_populates="guidelines")
     versions: Mapped[list["GuidelineVersion"]] = relationship(
@@ -175,6 +182,10 @@ class GuidelineVersion(Base):
     version_label: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="버전 표기 (예: v2.0, 2026년판)")
     published_date: Mapped[date] = mapped_column(Date, nullable=False, comment="발행일")
     pdf_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True,
+        comment="PDF 본문 SHA-256 (동일 문서 식별용)"
+    )
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True, comment="변경사항 요약 (LLM 생성)")
     significance: Mapped[str | None] = mapped_column(Text, nullable=True, comment="변경 의의 (LLM 생성)")

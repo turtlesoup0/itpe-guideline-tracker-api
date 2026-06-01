@@ -77,6 +77,7 @@ class GuidelineOut(BaseModel):
     description: str | None
     source_url: str | None
     pdf_url: str | None
+    duplicate_of_id: int | None = None
     latest_published_date: date | None = None
     version_count: int = 0
 
