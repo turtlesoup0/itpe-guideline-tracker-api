@@ -89,6 +89,37 @@ def _find_pdf_url(attachment_urls: list[str]) -> str | None:
     return attachment_urls[0] if attachment_urls else None
 
 
+def content_fingerprint(pdf_url: str | None, source_url: str | None) -> str | None:
+    """문서 콘텐츠 식별자(fingerprint) 추출.
+
+    동일 문서가 게시일만 바뀌어 재수집될 때 중복 버전 생성을 막기 위해,
+    파일 자체를 가리키는 안정적 식별자를 추출한다.
+
+    우선순위:
+    1. KOSA(sw.or.kr) cfIdx — 파일 고유 ID
+    2. 법제처/일반 게시판 seq / nttNo / bbsNo 등 게시물 ID
+    3. 그 외: PDF URL 자체 (쿼리스트링 제외)
+    """
+    for u in (pdf_url, source_url):
+        if not u:
+            continue
+        # KOSA 파일 ID
+        m = re.search(r"cfIdx=(CF\d+)", u)
+        if m:
+            return f"cf:{m.group(1)}"
+    # 게시물 시퀀스 (seq / nttNo)
+    for u in (source_url, pdf_url):
+        if not u:
+            continue
+        m = re.search(r"(?:seq|nttNo|bbsNo|fileSeq|fileNo)=(\d+)", u)
+        if m:
+            return f"seq:{m.group(1)}"
+    # fallback: PDF URL의 path 부분 (쿼리 제거)
+    if pdf_url:
+        return "url:" + pdf_url.split("?")[0]
+    return None
+
+
 # ── 가이드라인 제목 필터링 (오탐 방지) ──────────────────
 
 
@@ -360,12 +391,17 @@ async def sync_crawl_results(
     url_index: dict[str, Guideline] = {
         g.source_url: g for g in existing_guidelines if g.source_url
     }
-    # title → (guideline, set of published_dates)
-    title_index: dict[str, tuple[Guideline, set[date]]] = {}
+    # title → (guideline, set of published_dates, set of content fingerprints)
+    title_index: dict[str, tuple[Guideline, set[date], set[str]]] = {}
     for g in existing_guidelines:
         norm = normalize_title(g.title)
         dates = {v.published_date for v in g.versions}
-        title_index[norm] = (g, dates)
+        fps = set()
+        for v in g.versions:
+            fp = content_fingerprint(v.pdf_url, g.source_url)
+            if fp:
+                fps.add(fp)
+        title_index[norm] = (g, dates, fps)
 
     new_count = 0
     updated_count = 0
@@ -442,12 +478,21 @@ async def sync_crawl_results(
         version_label = extract_version_label(item.title)
         pub_date = item.published_date or date.today()
 
-        # 2) 같은 정규화 제목의 가이드라인 존재 → 버전 추가
+        # 2) 같은 정규화 제목의 가이드라인 존재 → 버전 추가 판단
         if norm_title in title_index:
-            existing, existing_dates = title_index[norm_title]
+            existing, existing_dates, existing_fps = title_index[norm_title]
 
-            # 같은 날짜의 버전이 이미 있으면 스킵
-            if pub_date in existing_dates:
+            # 콘텐츠 식별자(PDF cfIdx/seq)가 동일하면 같은 문서 → 새 버전 아님.
+            # (게시일이 매주 재수집으로 바뀌어도 같은 파일이면 스킵)
+            new_fp = content_fingerprint(pdf_url, item.url)
+            if new_fp and new_fp in existing_fps:
+                if existing.item_type != target_type:
+                    existing.item_type = target_type
+                skipped_count += 1
+                continue
+
+            # fingerprint를 못 구한 경우에만 날짜 기반 fallback
+            if new_fp is None and pub_date in existing_dates:
                 skipped_count += 1
                 continue
 
@@ -465,6 +510,8 @@ async def sync_crawl_results(
             # 인덱스 갱신
             url_index[item.url] = existing
             existing_dates.add(pub_date)
+            if new_fp:
+                existing_fps.add(new_fp)
             updated_count += 1
             continue
 
@@ -491,7 +538,10 @@ async def sync_crawl_results(
 
         # 인덱스 갱신
         url_index[item.url] = guideline
-        title_index[norm_title] = (guideline, {pub_date})
+        _new_fp = content_fingerprint(pdf_url, item.url)
+        title_index[norm_title] = (
+            guideline, {pub_date}, {_new_fp} if _new_fp else set(),
+        )
         new_count += 1
 
     return {
@@ -527,9 +577,16 @@ def sync_crawl_results_sync(
     existing = db.query(Guideline).filter(Guideline.agency_id == agency_id).all()
 
     url_index: dict[str, Guideline] = {g.source_url: g for g in existing if g.source_url}
-    title_index: dict[str, tuple[Guideline, set]] = {}
+    title_index: dict[str, tuple[Guideline, set, set]] = {}
     for g in existing:
-        title_index[normalize_title(g.title)] = (g, {v.published_date for v in g.versions})
+        fps = set()
+        for v in g.versions:
+            fp = content_fingerprint(v.pdf_url, g.source_url)
+            if fp:
+                fps.add(fp)
+        title_index[normalize_title(g.title)] = (
+            g, {v.published_date for v in g.versions}, fps,
+        )
 
     target_type = (
         ItemType.ANNOUNCEMENT if config_item_type == "announcement"
@@ -568,12 +625,21 @@ def sync_crawl_results_sync(
         version_label = extract_version_label(item.title)
         pub_date = item.published_date or date.today()
 
-        # 같은 정규화 제목 있으면 버전 추가
+        # 같은 정규화 제목 있으면 버전 추가 판단
         if norm in title_index:
-            ex, dates = title_index[norm]
-            if pub_date in dates:
+            ex, dates, fps = title_index[norm]
+
+            # 콘텐츠 식별자 동일 → 같은 문서, 스킵
+            new_fp = content_fingerprint(pdf_url, item.url)
+            if new_fp and new_fp in fps:
+                if ex.item_type != target_type:
+                    ex.item_type = target_type
                 skipped_count += 1
                 continue
+            if new_fp is None and pub_date in dates:
+                skipped_count += 1
+                continue
+
             v = GuidelineVersion(
                 guideline_id=ex.id,
                 version_label=version_label,
@@ -586,6 +652,8 @@ def sync_crawl_results_sync(
                 ex.item_type = target_type
             url_index[item.url] = ex
             dates.add(pub_date)
+            if new_fp:
+                fps.add(new_fp)
             updated_count += 1
             continue
 
@@ -609,7 +677,8 @@ def sync_crawl_results_sync(
         )
         db.add(v)
         url_index[item.url] = g
-        title_index[norm] = (g, {pub_date})
+        _new_fp = content_fingerprint(pdf_url, item.url)
+        title_index[norm] = (g, {pub_date}, {_new_fp} if _new_fp else set())
         new_count += 1
 
     db.commit()
