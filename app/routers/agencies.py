@@ -148,6 +148,8 @@ async def seed_agencies(db: AsyncSession = Depends(get_db)) -> dict:
                 pagination_param=target.pagination_param,
                 max_pages=target.max_pages,
                 keyword_filter=",".join(target.keyword_filter) if target.keyword_filter else None,
+                item_type=target.item_type,
+                is_active=target.is_active,
             )
             db.add(config)
 

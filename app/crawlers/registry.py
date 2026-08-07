@@ -26,6 +26,8 @@ class CrawlTarget:
     # 이 게시판에서 수집되는 항목의 유형: 보도자료/공지사항 게시판이면 "announcement",
     # 자료실/가이드/매뉴얼 게시판이면 "guideline" (기본값)
     item_type: str = "guideline"
+    # 소스가 폐쇄/이관된 경우 False — seed 시 비활성 상태로 등록되어 크롤 대상에서 제외
+    is_active: bool = True
 
 
 @dataclass
@@ -180,20 +182,27 @@ AGENCY_SEEDS: list[AgencySeed] = [
         homepage_url="https://www.ncsc.go.kr",
         description="보안적합성 검증, 암호모듈 검증기준, 사이버보안 가이드",
         targets=[
+            # NOTE(2026-08): NCSC 사이트 개편으로 아래 두 게시판은 404 (소스 소멸).
+            #   ncsc.go.kr:4018/main/cop/bbs/... → 신 사이트(ncsc.go.kr, JS+토큰 URL)로 이관되며
+            #   '지침'·'자료실' 게시판 자체가 공개 메뉴에서 사라짐(공지/교육자료/발간자료만 존재).
+            #   신 사이트 발간자료는 nis.go.kr AF 소스와 내용이 중복되어 별도 추가하지 않음.
+            #   이미 수집된 「국가 사이버보안 기본지침」 등 7건은 DB에 보존되나 갱신 추적 불가.
+            #   → 재공개 시 Playwright table_group 프로필로 복구 가능 (playwright_bbs.py 참고).
             CrawlTarget(
                 label="자료실",
                 source_type="bbs_list",
                 url="https://www.ncsc.go.kr:4018/main/cop/bbs/selectBoardList.do?bbsId=SecurityAdvice_main",
                 schedule="monthly",
                 keyword_filter=GUIDELINE_KEYWORDS,
+                is_active=False,
             ),
-            # NCSC 지침 게시판 — 국가사이버보안기본지침 등 핵심 지침 발행처
             CrawlTarget(
                 label="NCSC 지침",
                 source_type="bbs_list",
                 url="https://www.ncsc.go.kr:4018/main/cop/bbs/selectBoardList.do?bbsId=InstructionGuide_main",
                 schedule="weekly",
                 keyword_filter=GUIDELINE_KEYWORDS,
+                is_active=False,
             ),
             # 국정원 보도자료 — 표준 BBS
             CrawlTarget(
