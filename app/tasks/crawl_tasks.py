@@ -55,11 +55,24 @@ async def _run_crawl_config(config: CrawlConfig, agency_code: str) -> CrawlResul
 
 
 def _run_async(coro):
-    """Celery 태스크 내에서 async 코루틴을 실행합니다."""
+    """Celery 태스크 내에서 async 코루틴을 실행합니다.
+
+    주의: 호출마다 새 이벤트 루프를 만들기 때문에, 전역 async 엔진
+    (app.db.session.engine)의 커넥션 풀에 이 루프에 바인딩된 커넥션이
+    남으면 다음 호출에서 "attached to a different loop"로 실패한다
+    (FSI 자료마당 크롤 연속 FAILED 원인). 루프를 닫기 전에 반드시
+    같은 루프 안에서 풀을 dispose해 커넥션을 정리한다.
+    """
+    from app.db.session import engine as async_engine
+
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
     finally:
+        try:
+            loop.run_until_complete(async_engine.dispose())
+        except Exception as e:
+            logger.warning("async 엔진 dispose 실패 (무시): %s", e)
         loop.close()
 
 

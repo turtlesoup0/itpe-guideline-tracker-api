@@ -475,19 +475,32 @@ async def sync_crawl_results(
     pending_count = 0
     cached_excluded_count = 0
 
+    from app.models.guideline import ItemType
+    target_type = (
+        ItemType.ANNOUNCEMENT if config_item_type == "announcement"
+        else ItemType.GUIDELINE
+    )
+
     for item in items:
         # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 재판정 없이 스킵.
-        # (PENDING은 재판정, ACCEPTED는 아래 dedup 로직이 처리)
+        # PENDING은 재판정. ACCEPTED(동일 제목)는 아래에서 LLM 생략에 활용.
         cached = decision_cache.get(item.url)
-        if (
-            cached is not None
-            and cached.outcome == DecisionOutcome.EXCLUDED
-            and cached.title == item.title[:500]
-        ):
+        cache_hit = cached is not None and cached.title == item.title[:500]
+        if cache_hit and cached.outcome == DecisionOutcome.EXCLUDED:
             cached_excluded_count += 1
             continue
+        pre_accepted = cache_hit and cached.outcome == DecisionOutcome.ACCEPTED
 
-        # 0) IT 도메인 관련성 — 비IT 행정/정책 문서 제외 (모든 소스 공통)
+        # 0) URL이 이미 수집돼 있으면 재분류 없이 item_type만 정정 후 스킵.
+        # (분류보다 먼저 — 수집 완료 항목에 LLM을 재호출할 이유가 없다)
+        if item.url in url_index:
+            existing = url_index[item.url]
+            if existing.item_type != target_type:
+                existing.item_type = target_type
+            skipped_count += 1
+            continue
+
+        # 0-1) IT 도메인 관련성 — 비IT 행정/정책 문서 제외 (모든 소스 공통)
         if not is_it_relevant(item.title, agency_code):
             _upsert_decision(
                 db.add, decision_cache,
@@ -498,18 +511,23 @@ async def sync_crawl_results(
             filtered_count += 1
             continue
 
-        # 0-2) 가이드라인 분류는 guideline 소스에만 적용.
-        #    announcement 소스(보도자료·공지사항)는 해당 게시판 자체가 이미 보도성
-        #    맥락이므로: 키워드 매칭(또는 필터 없음) 항목은 통과,
-        #    미매칭 항목은 버리는 대신 LLM 판정으로 회수 기회를 준다
-        #    (soft 필터 전환 전에는 크롤 시점에 기록 없이 소실되던 항목).
-        if config_item_type == "announcement":
-            classification = None if item.keyword_matched is False else True
-            accept_stage = "announcement_pass"
+        # 0-2) 분류.
+        #    - 기판정 ACCEPTED 캐시가 있으면 재판정 생략.
+        #    - announcement 소스: 키워드 매칭 여부와 무관하게 LLM 게이트.
+        #      (키워드만 믿으면 '안내·대책·방안' 등 광범위 단어로 비IT 잡음이
+        #       대량 유입됨 — 2026-08-18 감사에서 announcement 147건 중
+        #       92건이 잡음으로 확인된 데 따른 조치)
+        #    - guideline 소스: 제목 3단계(제외 정규식 → 강한 키워드 → LLM).
+        accept_reason: str | None = None
+        if pre_accepted:
+            classification = True
+            accept_stage = cached.stage or "cached"
+        elif config_item_type == "announcement":
+            classification = None
+            accept_stage = "announcement_llm"
         else:
             classification = classify_title(item.title)
             accept_stage = "regex_strong"
-        accept_reason: str | None = None
 
         if classification is False:
             # Stage 1: 확실한 비-가이드라인
@@ -583,28 +601,15 @@ async def sync_crawl_results(
                 pending_count += 1
                 continue
 
-        # classification is True (Stage 2) 또는 LLM YES → 수집 진행
+        # classification is True (Stage 2/캐시) 또는 LLM YES → 수집 진행
         # 분류 판정을 기록 (dedup으로 스킵되더라도 판정 자체는 ACCEPTED)
-        _upsert_decision(
-            db.add, decision_cache,
-            agency_id=agency_id, config_label=config_label, item=item,
-            outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
-            reason=accept_reason,
-        )
-
-        # 1) URL 중복 → item_type 갱신 후 스킵
-        # (크롤 소스의 item_type이 기존 레코드와 다르면 config 기준으로 정정)
-        from app.models.guideline import ItemType
-        target_type = (
-            ItemType.ANNOUNCEMENT if config_item_type == "announcement"
-            else ItemType.GUIDELINE
-        )
-        if item.url in url_index:
-            existing = url_index[item.url]
-            if existing.item_type != target_type:
-                existing.item_type = target_type
-            skipped_count += 1
-            continue
+        if not pre_accepted:
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
+                reason=accept_reason,
+            )
 
         norm_title = normalize_title(item.title)
         pdf_url = _find_pdf_url(item.attachment_urls)
@@ -778,14 +783,21 @@ def sync_crawl_results_sync(
     pending_count = cached_excluded_count = llm_classified_count = 0
 
     for item in items:
-        # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 스킵
+        # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 스킵.
+        # ACCEPTED(동일 제목)는 재판정 생략에 활용.
         cached = decision_cache.get(item.url)
-        if (
-            cached is not None
-            and cached.outcome == DecisionOutcome.EXCLUDED
-            and cached.title == item.title[:500]
-        ):
+        cache_hit = cached is not None and cached.title == item.title[:500]
+        if cache_hit and cached.outcome == DecisionOutcome.EXCLUDED:
             cached_excluded_count += 1
+            continue
+        pre_accepted = cache_hit and cached.outcome == DecisionOutcome.ACCEPTED
+
+        # URL이 이미 수집돼 있으면 재분류 없이 item_type만 정정 후 스킵
+        if item.url in url_index:
+            ex = url_index[item.url]
+            if ex.item_type != target_type:
+                ex.item_type = target_type
+            skipped_count += 1
             continue
 
         # IT 도메인 관련성 — 비IT 행정/정책 문서 제외
@@ -799,15 +811,18 @@ def sync_crawl_results_sync(
             filtered_count += 1
             continue
 
-        # 분류: guideline 소스는 제목 3단계, announcement 소스는
-        # 키워드 매칭(또는 필터 없음) 통과 / 미매칭은 LLM 판정
-        if config_item_type == "announcement":
-            c = None if item.keyword_matched is False else True
-            accept_stage = "announcement_pass"
+        # 분류: ACCEPTED 캐시 → 생략, announcement 소스 → 전건 LLM 게이트,
+        # guideline 소스 → 제목 3단계 (async 버전과 동일 정책)
+        accept_reason: str | None = None
+        if pre_accepted:
+            c = True
+            accept_stage = cached.stage or "cached"
+        elif config_item_type == "announcement":
+            c = None
+            accept_stage = "announcement_llm"
         else:
             c = classify_title(item.title)
             accept_stage = "regex_strong"
-        accept_reason: str | None = None
 
         if c is False:
             _upsert_decision(
@@ -865,20 +880,13 @@ def sync_crawl_results_sync(
             accept_reason = result.reason
 
         # 분류 통과 → 판정 기록
-        _upsert_decision(
-            db.add, decision_cache,
-            agency_id=agency_id, config_label=config_label, item=item,
-            outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
-            reason=accept_reason,
-        )
-
-        # URL 중복 → item_type만 갱신
-        if item.url in url_index:
-            ex = url_index[item.url]
-            if ex.item_type != target_type:
-                ex.item_type = target_type
-            skipped_count += 1
-            continue
+        if not pre_accepted:
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
+                reason=accept_reason,
+            )
 
         norm = normalize_title(item.title)
         pdf_url = _find_pdf_url(item.attachment_urls)
