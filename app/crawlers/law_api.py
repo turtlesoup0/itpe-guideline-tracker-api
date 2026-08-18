@@ -57,6 +57,10 @@ RELEVANCE_KEYWORDS = [
 # DRF API 설정
 DRF_API_URL = "http://www.law.go.kr/DRF/lawSearch.do"
 DRF_OC_KEY = "itpe_law_follower"
+# 법제처 OPEN API는 Referer 헤더 없는 요청을 OC 유효 여부와 무관하게
+# "사용자 정보 검증 실패"로 거부한다 (IP/도메인 등록 문제로 오인되기 쉬움 —
+# 법제처는 IP 등록제가 아니라 OC 키만으로 관리). Referer 필수.
+DRF_REFERER = "https://www.law.go.kr/"
 
 # 행정규칙종류 → 한국어 매핑
 RULE_TYPE_MAP: dict[str, str] = {
@@ -95,7 +99,10 @@ async def search_admin_rules(
     seen_ids: set[str] = set()  # 중복 방지
 
     async with httpx.AsyncClient(
-        headers={"User-Agent": settings.crawl_user_agent},
+        headers={
+            "User-Agent": settings.crawl_user_agent,
+            "Referer": DRF_REFERER,
+        },
         follow_redirects=True,
         timeout=30,
     ) as client:
@@ -122,8 +129,9 @@ async def search_admin_rules(
                 # API 인증 실패 탐지 — "사용자 정보 검증 실패" 등
                 if "result" in data and "검증에 실패" in str(data.get("result", "")):
                     raise RuntimeError(
-                        f"법제처 DRF API 인증 실패 (OC 키 '{DRF_OC_KEY}'의 등록 IP와 "
-                        f"서버 IP 불일치). 법제처 OPEN API 페이지에서 현재 서버 IP 등록 필요."
+                        f"법제처 DRF API 인증 실패 (OC 키 '{DRF_OC_KEY}'). "
+                        f"Referer 헤더 누락 또는 OC 키 미등록 확인 필요 "
+                        f"(법제처는 IP 등록제가 아님 — OC 키만으로 관리)."
                     )
 
                 # 응답 구조: { "AdmRulSearch": { "totalCnt": N, "admrul": [...] } }
