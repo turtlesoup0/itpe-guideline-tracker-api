@@ -170,6 +170,18 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 pagination_param="page",
                 keyword_filter=[],
             ),
+            # 공지사항 — 자료실에 안 올라가는 가이드가 여기로만 공지되는 경우가 있음.
+            # (예: 'AI 보안 레드티밍 가이드'(2026.07)는 자료실 4곳에 없고 공지에만 존재)
+            # 블록체인 행사·채용·공모 등 잡음이 많아 키워드 필터 필수.
+            CrawlTarget(
+                label="공지사항",
+                source_type="bbs_list",
+                url="https://www.kisa.or.kr/401",
+                schedule="weekly",
+                pagination_param="page",
+                max_pages=5,
+                keyword_filter=GUIDELINE_KEYWORDS,
+            ),
         ],
     ),
     # ─────────────────────────────────────────────────────
