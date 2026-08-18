@@ -222,19 +222,25 @@ async def crawl_bbs_detail_scan(
         tasks = [bounded(client, n) for n in range(start, end + 1)]
         fetched = await asyncio.gather(*tasks, return_exceptions=False)
 
-    # ── 3. 필터링 ──
+    # ── 3. soft 필터: 매칭 여부만 태그하고 전 항목 전달 ──
+    # (ID 스캔 특성상 타 게시판 글이 섞이므로, 최종 판정은 sync 단계의
+    #  IT 도메인 필터 + 정규식 + LLM 파이프라인이 담당)
     exists = 0
+    matched = 0
     for seq_id, item in fetched:
         if item is None:
             continue
         exists += 1
-        if any(kw in item.title for kw in keyword_filter):
-            result.items.append(item)
-            logger.info(f"[{profile.agency_code}] 수집: {profile.id_param_name}={seq_id} {item.title[:60]}")
+        if keyword_filter:
+            item.keyword_matched = any(kw in item.title for kw in keyword_filter)
+            if item.keyword_matched:
+                matched += 1
+                logger.info(f"[{profile.agency_code}] 수집: {profile.id_param_name}={seq_id} {item.title[:60]}")
+        result.items.append(item)
 
     result.finished_at = datetime.now()
     logger.info(
-        f"[{profile.agency_code}] 완료: 스캔 {profile.scan_window}건, 존재 {exists}건, 매칭 {len(result.items)}건"
+        f"[{profile.agency_code}] 완료: 스캔 {profile.scan_window}건, 존재 {exists}건, 매칭 {matched}건"
     )
     return result
 

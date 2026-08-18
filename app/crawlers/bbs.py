@@ -119,7 +119,11 @@ class BbsCrawler(BaseCrawler):
                 continue
 
             item = self._parse_row(row, page_url)
-            if item and self._matches_keywords(item.title):
+            if item:
+                # soft 필터: 매칭 여부만 태그하고 전 항목을 넘긴다.
+                # 최종 수집/제외 판정은 sync 단계(정규식+LLM)가 담당.
+                if self.keyword_filter:
+                    item.keyword_matched = self._matches_keywords(item.title)
                 items.append(item)
 
         return items

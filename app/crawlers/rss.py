@@ -89,10 +89,6 @@ class RssCrawler(BaseCrawler):
                 if not title or not link:
                     continue
 
-                # 키워드 필터 적용
-                if not self._matches_keywords(title):
-                    continue
-
                 # 첨부파일 추출 (enclosure 태그)
                 attachments = []
                 for enc in entry.get("enclosures", []):
@@ -107,6 +103,11 @@ class RssCrawler(BaseCrawler):
                         published_date=self._parse_date(entry),
                         category=entry.get("category", None),
                         attachment_urls=attachments,
+                        # soft 필터: 매칭 여부만 태그 (판정은 sync 단계)
+                        keyword_matched=(
+                            self._matches_keywords(title)
+                            if self.keyword_filter else None
+                        ),
                     )
                 )
 

@@ -120,9 +120,10 @@ async def crawl_static_pubs(
                 except ValueError:
                     pass
 
-        # 키워드 필터
-        if keyword_filter and not any(kw in title for kw in keyword_filter):
-            continue
+        # soft 키워드 필터: 매칭 여부만 태그 (판정은 sync 단계 정규식+LLM)
+        kw_matched = (
+            any(kw in title for kw in keyword_filter) if keyword_filter else None
+        )
 
         download_url = (
             profile.download_url_template.format(seq=seq)
@@ -137,6 +138,7 @@ async def crawl_static_pubs(
             url=source_url,
             attachment_urls=[download_url] if download_url else [],
             published_date=published_date,
+            keyword_matched=kw_matched,
         )
         result.items.append(item)
         logger.info(

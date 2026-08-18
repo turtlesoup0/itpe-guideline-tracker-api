@@ -1,5 +1,6 @@
 from app.models.base import Base
 from app.models.agency import Agency, CrawlConfig, CrawlRun
+from app.models.crawl_decision import CrawlDecision, DecisionOutcome
 from app.models.guideline import LegalBasis, Mandate, Guideline, GuidelineVersion, GapAnalysis
 
 __all__ = [
@@ -7,6 +8,8 @@ __all__ = [
     "Agency",
     "CrawlConfig",
     "CrawlRun",
+    "CrawlDecision",
+    "DecisionOutcome",
     "LegalBasis",
     "Mandate",
     "Guideline",

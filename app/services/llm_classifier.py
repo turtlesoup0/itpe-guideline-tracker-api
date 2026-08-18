@@ -1,8 +1,10 @@
 """
 로컬 Gemma 모델을 이용한 IT 가이드라인 분류기.
 
-Ollama(localhost)에서 gemma4:26b 모델을 사용하여
+로컬 MLX 서버(mlx_lm server, OpenAI 호환 API)의 supergemma4-26b 모델로
 제목 + 게시판명 + 본문 스니펫으로 가이드라인 여부를 판별합니다.
+(2026-08-18: Ollama 제거됨 → itpe-topic-splitter의 MLX 서버(port 8090)로 전환.
+ 서버는 launchd com.itpe.splitter.mlx 가 상시 구동.)
 
 Stage 1-2(정규식)에서 판단 불가한 경계 케이스에만 호출됩니다.
 """
@@ -16,10 +18,10 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Ollama 직접 포트 (nginx 프록시 우회)
-OLLAMA_BASE_URL = "http://localhost:41434"
-OLLAMA_MODEL = "gemma4:26b"
-OLLAMA_TIMEOUT = 30.0
+# 로컬 MLX 서버 (OpenAI 호환) — com.itpe.splitter.mlx launchd 서비스
+LLM_BASE_URL = "http://127.0.0.1:8090/v1"
+LLM_MODEL = "Jiunsong/supergemma4-26b-uncensored-mlx-4bit-v2"
+LLM_TIMEOUT = 60.0
 
 CLASSIFY_PROMPT = """\
 다음 게시물이 IT/정보보안/개인정보/SW 분야의 \
@@ -39,6 +41,28 @@ CLASSIFY_PROMPT = """\
 - 선정제품 목록, 평가결과 등 단순 리스트면 NO
 - 교육교재, 교육과정, 인식제고 자료면 NO
 - 운영방안, 사업계획, 수립결과 등 내부 운영문서면 NO
+
+YES 또는 NO만 답하세요."""
+
+# announcement 소스(보도자료·공지 게시판) 전용 프롬프트.
+# 목적이 다르다: 실제 문서 여부가 아니라, IT 규범(가이드라인·고시·법령)의
+# 제·개정/발간 "발표"인지를 판정한다.
+ANNOUNCEMENT_CLASSIFY_PROMPT = """\
+다음 보도자료/공지 게시물이 IT/정보보안/개인정보/SW 분야의 \
+가이드라인·지침·안내서·표준·고시·훈령·법령의 제정/개정/폐지/발간/배포 \
+발표에 관한 것인지 판단하세요.
+
+제목: {title}
+게시판: {board_label}
+기관: {agency_name}
+{body_section}
+
+판단 기준:
+- 가이드라인·지침·표준·고시·법령의 제·개정·발간·배포를 알리는 글이면 YES
+- 정책 방안·대책 발표로 후속 기준·지침 수립이 명시된 글이면 YES
+- 행사·세미나·채용·수상·MOU·홍보·통계 발표면 NO
+- 비-IT 분야(인사, 세금, 부동산, 복지, 일반 금융규제 등)면 NO
+- 단속·제재·조사 결과 발표면 NO
 
 YES 또는 NO만 답하세요."""
 
@@ -71,8 +95,33 @@ async def fetch_body_snippet(url: str, max_chars: int = 500) -> str:
         logger.debug("상세 페이지 fetch 실패 (%s): %s", url[:80], e)
         return ""
 
+    return _snippet_from_html(resp.text, url, max_chars)
+
+
+def fetch_body_snippet_sync(url: str, max_chars: int = 500) -> str:
+    """fetch_body_snippet의 동기 버전 (Celery 워커용)."""
+    if not url:
+        return ""
+
     try:
-        soup = BeautifulSoup(resp.text, "lxml")
+        with httpx.Client(
+            timeout=httpx.Timeout(10.0),
+            follow_redirects=True,
+            headers={"User-Agent": "GuidelineTracker/1.0"},
+        ) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+    except Exception as e:
+        logger.debug("상세 페이지 fetch 실패 (%s): %s", url[:80], e)
+        return ""
+
+    return _snippet_from_html(resp.text, url, max_chars)
+
+
+def _snippet_from_html(html: str, url: str, max_chars: int) -> str:
+    """HTML에서 본문 텍스트 스니펫 추출 (async/sync 공용)."""
+    try:
+        soup = BeautifulSoup(html, "lxml")
 
         # 불필요한 태그 제거
         for tag in soup.select("script, style, nav, header, footer, .gnb, .lnb"):
@@ -115,28 +164,15 @@ def _extract_attachment_names(body_snippet: str) -> list[str]:
     return [f".{ext}" for ext in patterns]
 
 
-async def classify_with_llm(
+def _build_prompt(
+    mode: str,
     title: str,
     board_label: str,
     agency_name: str,
-    detail_url: str = "",
-) -> ClassifyResult:
-    """Ollama Gemma 모델로 가이드라인 여부를 분류합니다.
-
-    Args:
-        title: 게시물 제목
-        board_label: 크롤링 대상 게시판 이름 (CrawlConfig.label)
-        agency_name: 기관명
-        detail_url: 상세 페이지 URL (본문 스니펫 추출용)
-
-    Returns:
-        ClassifyResult(is_guideline, confidence="llm", reason)
-    """
-    # 1) 상세 페이지에서 본문 스니펫 + 첨부파일 정보 추출
-    body_snippet = await fetch_body_snippet(detail_url)
-    attachments = _extract_attachment_names(body_snippet)
-
-    # 2) 본문 섹션 구성
+    body_snippet: str,
+    attachments: list[str],
+) -> str:
+    """모드별 프롬프트 구성. mode: "guideline" | "announcement"."""
     body_parts = []
     if body_snippet:
         body_parts.append(f"본문 첫 500자: {body_snippet}")
@@ -144,38 +180,35 @@ async def classify_with_llm(
         body_parts.append(f"첨부파일 확장자: {', '.join(attachments)}")
     body_section = "\n".join(body_parts) if body_parts else "본문: (추출 불가)"
 
-    # 3) LLM 호출
-    prompt = CLASSIFY_PROMPT.format(
+    template = (
+        ANNOUNCEMENT_CLASSIFY_PROMPT if mode == "announcement" else CLASSIFY_PROMPT
+    )
+    return template.format(
         title=title,
         board_label=board_label,
         agency_name=agency_name,
         body_section=body_section,
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(OLLAMA_TIMEOUT)) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "think": False,
-                    "options": {"temperature": 0, "num_predict": 10},
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
 
-    except Exception as e:
-        logger.warning("Ollama 호출 실패: %s — 보수적으로 제외", e)
-        return ClassifyResult(
-            is_guideline=False,
-            confidence="llm_error",
-            reason=f"Ollama 호출 실패: {e}",
-        )
+def _chat_payload(prompt: str) -> dict:
+    """OpenAI 호환 chat.completions 요청 본문 (MLX 서버용)."""
+    return {
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 10,
+        # supergemma4는 reasoning 모델 — thinking을 끄지 않으면
+        # max_tokens가 사고 토큰으로 소진되어 content가 비어버림
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
 
-    answer = data.get("message", {}).get("content", "").strip().upper()
+
+def _parse_response(
+    data: dict, body_snippet: str, attachments: list[str],
+) -> ClassifyResult:
+    choices = data.get("choices") or [{}]
+    answer = (choices[0].get("message", {}).get("content") or "").strip().upper()
     is_yes = answer.startswith("YES")
 
     reason_parts = [f"LLM={answer}"]
@@ -189,3 +222,69 @@ async def classify_with_llm(
         confidence="llm",
         reason=" | ".join(reason_parts),
     )
+
+
+def _error_result(e: Exception) -> ClassifyResult:
+    logger.warning("로컬 LLM 호출 실패: %s", e)
+    return ClassifyResult(
+        is_guideline=False,
+        confidence="llm_error",
+        reason=f"로컬 LLM 호출 실패: {e}",
+    )
+
+
+async def classify_with_llm(
+    title: str,
+    board_label: str,
+    agency_name: str,
+    detail_url: str = "",
+    mode: str = "guideline",
+) -> ClassifyResult:
+    """Ollama Gemma 모델로 가이드라인 여부를 분류합니다.
+
+    Args:
+        title: 게시물 제목
+        board_label: 크롤링 대상 게시판 이름 (CrawlConfig.label)
+        agency_name: 기관명
+        detail_url: 상세 페이지 URL (본문 스니펫 추출용)
+        mode: "guideline"(실제 문서 여부) | "announcement"(규범 발표 여부)
+
+    Returns:
+        ClassifyResult(is_guideline, confidence="llm"|"llm_error", reason)
+    """
+    body_snippet = await fetch_body_snippet(detail_url)
+    attachments = _extract_attachment_names(body_snippet)
+    prompt = _build_prompt(mode, title, board_label, agency_name, body_snippet, attachments)
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(LLM_TIMEOUT)) as client:
+            resp = await client.post(f"{LLM_BASE_URL}/chat/completions", json=_chat_payload(prompt))
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return _error_result(e)
+
+    return _parse_response(data, body_snippet, attachments)
+
+
+def classify_with_llm_sync(
+    title: str,
+    board_label: str,
+    agency_name: str,
+    detail_url: str = "",
+    mode: str = "guideline",
+) -> ClassifyResult:
+    """classify_with_llm의 동기 버전 — Celery 워커(동기 컨텍스트)용."""
+    body_snippet = fetch_body_snippet_sync(detail_url)
+    attachments = _extract_attachment_names(body_snippet)
+    prompt = _build_prompt(mode, title, board_label, agency_name, body_snippet, attachments)
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(LLM_TIMEOUT)) as client:
+            resp = client.post(f"{LLM_BASE_URL}/chat/completions", json=_chat_payload(prompt))
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return _error_result(e)
+
+    return _parse_response(data, body_snippet, attachments)

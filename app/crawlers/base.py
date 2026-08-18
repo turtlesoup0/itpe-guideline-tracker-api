@@ -23,6 +23,10 @@ class CrawledItem:
     category: str | None = None          # 게시판 분류 (있는 경우)
     attachment_urls: list[str] = field(default_factory=list)  # PDF 등 첨부파일
     raw_html: str | None = None          # 원본 HTML (디버깅용)
+    # 크롤 시점 keyword_filter 매칭 여부 (soft 신호 — drop 아님).
+    # None = 필터 미설정, True/False = 필터 있고 매칭됨/안 됨.
+    # 판정(수집/제외)은 sync 단계의 정규식+LLM 파이프라인이 담당한다.
+    keyword_matched: bool | None = None
 
     def __repr__(self) -> str:
         date_str = self.published_date.isoformat() if self.published_date else "?"

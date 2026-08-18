@@ -213,13 +213,15 @@ async def crawl_playwright_bbs(
                     else:
                         item_url = target_url
 
-                    if keyword_filter and not any(kw in title for kw in keyword_filter):
-                        continue
-
                     result.items.append(CrawledItem(
                         title=title,
                         url=item_url,
                         published_date=pub_date,
+                        # soft 필터: 매칭 여부만 태그 (판정은 sync 단계)
+                        keyword_matched=(
+                            any(kw in title for kw in keyword_filter)
+                            if keyword_filter else None
+                        ),
                     ))
 
                 await browser.close()
@@ -261,14 +263,15 @@ async def crawl_playwright_bbs(
                 except Exception:
                     pass
 
-                # 키워드 필터
-                if keyword_filter and not any(kw in text for kw in keyword_filter):
-                    continue
-
                 result.items.append(CrawledItem(
                     title=text,
                     url=href,
                     published_date=pub_date,
+                    # soft 필터: 매칭 여부만 태그 (판정은 sync 단계)
+                    keyword_matched=(
+                        any(kw in text for kw in keyword_filter)
+                        if keyword_filter else None
+                    ),
                 ))
 
             await browser.close()

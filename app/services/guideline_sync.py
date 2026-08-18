@@ -16,9 +16,52 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.crawlers.base import CrawledItem
+from app.models.crawl_decision import CrawlDecision, DecisionOutcome
 from app.models.guideline import Guideline, GuidelineCategory, GuidelineVersion
 
 logger = logging.getLogger(__name__)
+
+
+# ── 판정 기록 (crawl_decisions) ─────────────────────────
+# 수집/제외/보류 판정을 URL 단위로 기록한다.
+# - 감사: 제외 항목이 사유와 함께 남아 필터 튜닝 근거가 됨
+# - 캐시: EXCLUDED로 기판정된 URL(제목 동일)은 LLM 재호출 없이 스킵
+# - 재시도: PENDING(LLM 실패 등)은 다음 크롤에서 자동 재판정
+
+
+def _upsert_decision(
+    db_add,
+    cache: dict[str, CrawlDecision],
+    *,
+    agency_id: int,
+    config_label: str,
+    item: CrawledItem,
+    outcome: DecisionOutcome,
+    stage: str,
+    reason: str | None = None,
+) -> None:
+    """판정 행을 갱신하거나 새로 만든다. db_add는 db.add 함수."""
+    existing = cache.get(item.url)
+    if existing is not None:
+        existing.title = item.title[:500]
+        existing.config_label = config_label[:200] if config_label else None
+        existing.outcome = outcome
+        existing.stage = stage
+        existing.reason = reason
+        existing.keyword_matched = item.keyword_matched
+        return
+    decision = CrawlDecision(
+        agency_id=agency_id,
+        config_label=config_label[:200] if config_label else None,
+        url=item.url[:1000],
+        title=item.title[:500],
+        outcome=outcome,
+        stage=stage,
+        reason=reason,
+        keyword_matched=item.keyword_matched,
+    )
+    db_add(decision)
+    cache[item.url] = decision
 
 
 # ── 제목 정규화 (버전 매칭용) ────────────────────────────
@@ -414,29 +457,68 @@ async def sync_crawl_results(
     for h, gid in hv_result.all():
         hash_index.setdefault(h, gid)
 
+    # 판정 캐시 로드 (이번 배치의 URL만)
+    decision_cache: dict[str, CrawlDecision] = {}
+    item_urls = [i.url for i in items if i.url]
+    if item_urls:
+        dec_result = await db.execute(
+            select(CrawlDecision).where(CrawlDecision.url.in_(item_urls))
+        )
+        decision_cache = {d.url: d for d in dec_result.scalars().all()}
+
     new_count = 0
     updated_count = 0
     skipped_count = 0
     filtered_count = 0
     llm_classified_count = 0
     duplicate_count = 0
+    pending_count = 0
+    cached_excluded_count = 0
 
     for item in items:
+        # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 재판정 없이 스킵.
+        # (PENDING은 재판정, ACCEPTED는 아래 dedup 로직이 처리)
+        cached = decision_cache.get(item.url)
+        if (
+            cached is not None
+            and cached.outcome == DecisionOutcome.EXCLUDED
+            and cached.title == item.title[:500]
+        ):
+            cached_excluded_count += 1
+            continue
+
         # 0) IT 도메인 관련성 — 비IT 행정/정책 문서 제외 (모든 소스 공통)
         if not is_it_relevant(item.title, agency_code):
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="it_domain",
+                reason="비IT 도메인 제목",
+            )
             filtered_count += 1
             continue
 
         # 0-2) 가이드라인 분류는 guideline 소스에만 적용.
         #    announcement 소스(보도자료·공지사항)는 해당 게시판 자체가 이미 보도성
-        #    맥락이므로 제목 기반 재분류는 스킵하고, 크롤러의 키워드 필터만 신뢰.
+        #    맥락이므로: 키워드 매칭(또는 필터 없음) 항목은 통과,
+        #    미매칭 항목은 버리는 대신 LLM 판정으로 회수 기회를 준다
+        #    (soft 필터 전환 전에는 크롤 시점에 기록 없이 소실되던 항목).
         if config_item_type == "announcement":
-            classification = True  # 통과
+            classification = None if item.keyword_matched is False else True
+            accept_stage = "announcement_pass"
         else:
             classification = classify_title(item.title)
+            accept_stage = "regex_strong"
+        accept_reason: str | None = None
 
         if classification is False:
             # Stage 1: 확실한 비-가이드라인
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="regex_exclude",
+                reason="제외 패턴 매칭",
+            )
             filtered_count += 1
             continue
 
@@ -450,12 +532,36 @@ async def sync_crawl_results(
                     board_label=config_label,
                     agency_name=agency_name,
                     detail_url=item.url,
+                    mode=(
+                        "announcement" if config_item_type == "announcement"
+                        else "guideline"
+                    ),
                 )
                 llm_classified_count += 1
+
+                if result.confidence == "llm_error":
+                    # LLM 호출 실패 → 제외가 아니라 보류 (다음 크롤에서 재판정)
+                    logger.warning(
+                        "LLM 호출 실패, 보류: %s (%s)", item.title[:60], result.reason,
+                    )
+                    _upsert_decision(
+                        db.add, decision_cache,
+                        agency_id=agency_id, config_label=config_label, item=item,
+                        outcome=DecisionOutcome.PENDING, stage="llm_error",
+                        reason=result.reason,
+                    )
+                    pending_count += 1
+                    continue
 
                 if not result.is_guideline:
                     logger.info(
                         "LLM 제외: %s (%s)", item.title[:60], result.reason,
+                    )
+                    _upsert_decision(
+                        db.add, decision_cache,
+                        agency_id=agency_id, config_label=config_label, item=item,
+                        outcome=DecisionOutcome.EXCLUDED, stage="llm",
+                        reason=result.reason,
                     )
                     filtered_count += 1
                     continue
@@ -463,13 +569,28 @@ async def sync_crawl_results(
                 logger.info(
                     "LLM 수집: %s (%s)", item.title[:60], result.reason,
                 )
+                accept_stage = "llm"
+                accept_reason = result.reason
             except Exception as e:
-                # LLM 실패 시 보수적으로 제외
-                logger.warning("LLM 분류 실패, 제외: %s — %s", item.title[:60], e)
-                filtered_count += 1
+                # 예기치 못한 오류 → 보류 (다음 크롤에서 재판정)
+                logger.warning("LLM 분류 오류, 보류: %s — %s", item.title[:60], e)
+                _upsert_decision(
+                    db.add, decision_cache,
+                    agency_id=agency_id, config_label=config_label, item=item,
+                    outcome=DecisionOutcome.PENDING, stage="llm_error",
+                    reason=str(e)[:500],
+                )
+                pending_count += 1
                 continue
 
         # classification is True (Stage 2) 또는 LLM YES → 수집 진행
+        # 분류 판정을 기록 (dedup으로 스킵되더라도 판정 자체는 ACCEPTED)
+        _upsert_decision(
+            db.add, decision_cache,
+            agency_id=agency_id, config_label=config_label, item=item,
+            outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
+            reason=accept_reason,
+        )
 
         # 1) URL 중복 → item_type 갱신 후 스킵
         # (크롤 소스의 item_type이 기존 레코드와 다르면 config 기준으로 정정)
@@ -598,6 +719,8 @@ async def sync_crawl_results(
         "filtered": filtered_count,
         "llm_classified": llm_classified_count,
         "duplicate": duplicate_count,
+        "pending": pending_count,
+        "cached_excluded": cached_excluded_count,
     }
 
 
@@ -616,8 +739,7 @@ def sync_crawl_results_sync(
 ) -> dict:
     """sync_crawl_results의 동기 버전 — Celery 동기 세션용.
 
-    LLM 분류는 생략(경계 케이스는 announcement 소스면 수용, guideline 소스면 스킵).
-    제목 기반 classify_title만 사용.
+    async 버전과 동일한 3단계 파이프라인(정규식 + 로컬 LLM 동기 호출)을 적용한다.
     """
     from app.models.guideline import Guideline, GuidelineVersion, ItemType
 
@@ -641,24 +763,114 @@ def sync_crawl_results_sync(
         else ItemType.GUIDELINE
     )
 
+    # 판정 캐시 로드 (이번 배치의 URL만)
+    decision_cache: dict[str, CrawlDecision] = {}
+    item_urls = [i.url for i in items if i.url]
+    if item_urls:
+        rows = (
+            db.query(CrawlDecision)
+            .filter(CrawlDecision.url.in_(item_urls))
+            .all()
+        )
+        decision_cache = {d.url: d for d in rows}
+
     new_count = updated_count = skipped_count = filtered_count = 0
+    pending_count = cached_excluded_count = llm_classified_count = 0
 
     for item in items:
+        # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 스킵
+        cached = decision_cache.get(item.url)
+        if (
+            cached is not None
+            and cached.outcome == DecisionOutcome.EXCLUDED
+            and cached.title == item.title[:500]
+        ):
+            cached_excluded_count += 1
+            continue
+
         # IT 도메인 관련성 — 비IT 행정/정책 문서 제외
         if not is_it_relevant(item.title, agency_code):
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="it_domain",
+                reason="비IT 도메인 제목",
+            )
             filtered_count += 1
             continue
 
-        # 제목 기반 분류 (announcement 소스는 우회)
-        if config_item_type != "announcement":
+        # 분류: guideline 소스는 제목 3단계, announcement 소스는
+        # 키워드 매칭(또는 필터 없음) 통과 / 미매칭은 LLM 판정
+        if config_item_type == "announcement":
+            c = None if item.keyword_matched is False else True
+            accept_stage = "announcement_pass"
+        else:
             c = classify_title(item.title)
-            if c is False:
+            accept_stage = "regex_strong"
+        accept_reason: str | None = None
+
+        if c is False:
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="regex_exclude",
+                reason="제외 패턴 매칭",
+            )
+            filtered_count += 1
+            continue
+
+        if c is None:
+            # 경계 케이스 → 로컬 LLM (동기 호출, Celery 워커에서 실행)
+            from app.services.llm_classifier import classify_with_llm_sync
+
+            result = classify_with_llm_sync(
+                title=item.title,
+                board_label=config_label,
+                agency_name=agency_name,
+                detail_url=item.url,
+                mode=(
+                    "announcement" if config_item_type == "announcement"
+                    else "guideline"
+                ),
+            )
+            llm_classified_count += 1
+
+            if result.confidence == "llm_error":
+                # LLM 호출 실패 → 제외가 아니라 보류 (다음 크롤에서 재판정)
+                logger.warning(
+                    "LLM 호출 실패, 보류: %s (%s)", item.title[:60], result.reason,
+                )
+                _upsert_decision(
+                    db.add, decision_cache,
+                    agency_id=agency_id, config_label=config_label, item=item,
+                    outcome=DecisionOutcome.PENDING, stage="llm_error",
+                    reason=result.reason,
+                )
+                pending_count += 1
+                continue
+
+            if not result.is_guideline:
+                logger.info("LLM 제외: %s (%s)", item.title[:60], result.reason)
+                _upsert_decision(
+                    db.add, decision_cache,
+                    agency_id=agency_id, config_label=config_label, item=item,
+                    outcome=DecisionOutcome.EXCLUDED, stage="llm",
+                    reason=result.reason,
+                )
                 filtered_count += 1
                 continue
-            if c is None:
-                # LLM 분류는 동기 컨텍스트에서 skip → 보수적으로 제외
-                filtered_count += 1
-                continue
+
+            logger.info("LLM 수집: %s (%s)", item.title[:60], result.reason)
+            accept_stage = "llm"
+            accept_reason = result.reason
+
+        # 분류 통과 → 판정 기록
+        _upsert_decision(
+            db.add, decision_cache,
+            agency_id=agency_id, config_label=config_label, item=item,
+            outcome=DecisionOutcome.ACCEPTED, stage=accept_stage,
+            reason=accept_reason,
+        )
 
         # URL 중복 → item_type만 갱신
         if item.url in url_index:
@@ -735,4 +947,7 @@ def sync_crawl_results_sync(
         "updated": updated_count,
         "skipped": skipped_count,
         "filtered": filtered_count,
+        "llm_classified": llm_classified_count,
+        "pending": pending_count,
+        "cached_excluded": cached_excluded_count,
     }
