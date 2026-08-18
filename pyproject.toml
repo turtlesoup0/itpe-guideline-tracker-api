@@ -23,6 +23,8 @@ dependencies = [
     "celery[redis]>=5.4",
     # LLM
     "anthropic>=0.40",
+    # 제목 임베딩 (의미 기반 정체성 판정 Tier 1)
+    "sentence-transformers>=5.0",
     # Utilities
     "pydantic>=2.9",
     "pydantic-settings>=2.6",

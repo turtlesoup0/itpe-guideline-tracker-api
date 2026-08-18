@@ -436,6 +436,8 @@ async def sync_crawl_results(
     }
     # title → (guideline, set of published_dates, set of content fingerprints)
     title_index: dict[str, tuple[Guideline, set[date], set[str]]] = {}
+    # guideline_id → 같은 entry 튜플 (의미 기반 매칭이 id로 찾을 때 사용)
+    gid_entry_index: dict[int, tuple[Guideline, set[date], set[str]]] = {}
     for g in existing_guidelines:
         norm = normalize_title(g.title)
         dates = {v.published_date for v in g.versions}
@@ -445,6 +447,10 @@ async def sync_crawl_results(
             if fp:
                 fps.add(fp)
         title_index[norm] = (g, dates, fps)
+        gid_entry_index[g.id] = title_index[norm]
+
+    # 임베딩 인덱스는 정규화 매칭이 실패한 항목이 처음 나올 때 lazy 로드
+    emb_idx = None
 
     # 전역 content_hash 인덱스 (모든 기관 교차 — 동일 PDF 다른 출처 탐지)
     # hash → guideline_id (가장 먼저 수집된 원본)
@@ -474,6 +480,7 @@ async def sync_crawl_results(
     duplicate_count = 0
     pending_count = 0
     cached_excluded_count = 0
+    identity_matched_count = 0
 
     from app.models.guideline import ItemType
     target_type = (
@@ -616,9 +623,27 @@ async def sync_crawl_results(
         version_label = extract_version_label(item.title)
         pub_date = item.published_date or date.today()
 
-        # 2) 같은 정규화 제목의 가이드라인 존재 → 버전 추가 판단
-        if norm_title in title_index:
-            existing, existing_dates, existing_fps = title_index[norm_title]
+        # 2) 같은 문서 찾기 — 정규화 제목 exact(빠른 경로) → 의미 기반 판정.
+        # 정규식이 못 잡는 변형([현재/과거 안내서] 태그, 새글 배지 N 등)은
+        # 임베딩 후보 + LLM 판정(identity.py)이 받아낸다.
+        entry = title_index.get(norm_title)
+        if entry is None:
+            try:
+                from app.services.identity import find_same_document, load_embedding_index
+
+                if emb_idx is None:
+                    emb_idx = await load_embedding_index(db, agency_id, target_type)
+                match_gid = await find_same_document(emb_idx, agency_name, item.title)
+                if match_gid is not None and match_gid in gid_entry_index:
+                    entry = gid_entry_index[match_gid]
+                    identity_matched_count += 1
+            except Exception as e:
+                # 정체성 판정 실패는 수집을 막지 않는다 (신규로 처리)
+                logger.warning("[identity] 판정 실패, 신규로 처리: %s — %s", item.title[:50], e)
+
+        if entry is not None:
+            # 같은 문서의 다른 판 → 버전 추가 판단
+            existing, existing_dates, existing_fps = entry
 
             # 콘텐츠 식별자(PDF cfIdx/seq)가 동일하면 같은 문서 → 새 버전 아님.
             # (게시일이 매주 재수집으로 바뀌어도 같은 파일이면 스킵)
@@ -707,8 +732,20 @@ async def sync_crawl_results(
         title_index[norm_title] = (
             guideline, {pub_date}, {_new_fp} if _new_fp else set(),
         )
+        gid_entry_index[guideline.id] = title_index[norm_title]
         if content_h:
             hash_index.setdefault(content_h, guideline.id)
+
+        # 제목 임베딩 저장 (의미 기반 정체성 판정용) — 실패해도 수집은 계속
+        try:
+            from app.services.identity import make_embedding_row
+            emb_row, emb_vec = make_embedding_row(guideline.id, item.title)
+            db.add(emb_row)
+            if emb_idx is not None:
+                emb_idx.add(guideline.id, item.title, emb_vec)
+        except Exception as e:
+            logger.warning("[identity] 임베딩 저장 실패 (무시): %s", e)
+
         if dup_of:
             duplicate_count += 1
             logger.info(
@@ -726,6 +763,7 @@ async def sync_crawl_results(
         "duplicate": duplicate_count,
         "pending": pending_count,
         "cached_excluded": cached_excluded_count,
+        "identity_matched": identity_matched_count,
     }
 
 
@@ -753,15 +791,21 @@ def sync_crawl_results_sync(
 
     url_index: dict[str, Guideline] = {g.source_url: g for g in existing if g.source_url}
     title_index: dict[str, tuple[Guideline, set, set]] = {}
+    gid_entry_index: dict[int, tuple[Guideline, set, set]] = {}
     for g in existing:
         fps = set()
         for v in g.versions:
             fp = content_fingerprint(v.pdf_url, g.source_url)
             if fp:
                 fps.add(fp)
-        title_index[normalize_title(g.title)] = (
+        norm = normalize_title(g.title)
+        title_index[norm] = (
             g, {v.published_date for v in g.versions}, fps,
         )
+        gid_entry_index[g.id] = title_index[norm]
+
+    # 임베딩 인덱스는 정규화 매칭 실패 항목이 처음 나올 때 lazy 로드
+    emb_idx = None
 
     target_type = (
         ItemType.ANNOUNCEMENT if config_item_type == "announcement"
@@ -781,6 +825,7 @@ def sync_crawl_results_sync(
 
     new_count = updated_count = skipped_count = filtered_count = 0
     pending_count = cached_excluded_count = llm_classified_count = 0
+    identity_matched_count = 0
 
     for item in items:
         # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 스킵.
@@ -893,9 +938,26 @@ def sync_crawl_results_sync(
         version_label = extract_version_label(item.title)
         pub_date = item.published_date or date.today()
 
-        # 같은 정규화 제목 있으면 버전 추가 판단
-        if norm in title_index:
-            ex, dates, fps = title_index[norm]
+        # 같은 문서 찾기 — 정규화 제목 exact(빠른 경로) → 의미 기반 판정
+        entry = title_index.get(norm)
+        if entry is None:
+            try:
+                from app.services.identity import (
+                    find_same_document_sync, load_embedding_index_sync,
+                )
+
+                if emb_idx is None:
+                    emb_idx = load_embedding_index_sync(db, agency_id, target_type)
+                match_gid = find_same_document_sync(emb_idx, agency_name, item.title)
+                if match_gid is not None and match_gid in gid_entry_index:
+                    entry = gid_entry_index[match_gid]
+                    identity_matched_count += 1
+            except Exception as e:
+                logger.warning("[identity] 판정 실패, 신규로 처리: %s — %s", item.title[:50], e)
+
+        if entry is not None:
+            # 같은 문서의 다른 판 → 버전 추가 판단
+            ex, dates, fps = entry
 
             # 콘텐츠 식별자 동일 → 같은 문서, 스킵
             new_fp = content_fingerprint(pdf_url, item.url)
@@ -947,6 +1009,18 @@ def sync_crawl_results_sync(
         url_index[item.url] = g
         _new_fp = content_fingerprint(pdf_url, item.url)
         title_index[norm] = (g, {pub_date}, {_new_fp} if _new_fp else set())
+        gid_entry_index[g.id] = title_index[norm]
+
+        # 제목 임베딩 저장 (의미 기반 정체성 판정용) — 실패해도 수집은 계속
+        try:
+            from app.services.identity import make_embedding_row
+            emb_row, emb_vec = make_embedding_row(g.id, item.title)
+            db.add(emb_row)
+            if emb_idx is not None:
+                emb_idx.add(g.id, item.title, emb_vec)
+        except Exception as e:
+            logger.warning("[identity] 임베딩 저장 실패 (무시): %s", e)
+
         new_count += 1
 
     db.commit()
@@ -958,4 +1032,5 @@ def sync_crawl_results_sync(
         "llm_classified": llm_classified_count,
         "pending": pending_count,
         "cached_excluded": cached_excluded_count,
+        "identity_matched": identity_matched_count,
     }
