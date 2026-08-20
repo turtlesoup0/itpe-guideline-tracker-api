@@ -1,14 +1,16 @@
 """
 가이드라인 + 법적 근거 API 라우트.
 
-GET  /guidelines                — 가이드라인 목록 (필터: agency, category, q, sort_by)
+GET  /guidelines                — 가이드라인 목록 (필터: agency, category, q, sort_by, excluded)
+POST /guidelines/{id}/exclude   — 수집 제외 처리
+POST /guidelines/{id}/restore   — 제외 해제
 GET  /guidelines/recent-changes — 최근 변경된 가이드라인 목록
 GET  /guidelines/{id}           — 가이드라인 상세 + 버전 이력
 GET  /legal-bases               — 법적 근거(고시/훈령) 목록
 GET  /legal-bases/{id}/mandates — 위임 항목 목록
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -18,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
 from app.models.guideline import (
+    ExclusionCategory,
     Guideline,
     GuidelineCategory,
     GuidelineVersion,
@@ -25,6 +28,12 @@ from app.models.guideline import (
     LegalBasis,
     LegalBasisType,
     Mandate,
+)
+from app.models.exclusion_rule import ExclusionRuleCandidate, RuleCandidateStatus
+from app.services.exclusion import (
+    ExclusionError,
+    exclude_guideline,
+    restore_guideline,
 )
 
 router = APIRouter(tags=["guidelines"])
@@ -78,6 +87,9 @@ class GuidelineOut(BaseModel):
     source_url: str | None
     pdf_url: str | None
     duplicate_of_id: int | None = None
+    excluded_at: datetime | None = None
+    exclusion_category: str | None = None
+    exclusion_note: str | None = None
     latest_published_date: date | None = None
     version_count: int = 0
 
@@ -141,6 +153,9 @@ async def list_guidelines(
     item_type: ItemType | None = Query(None, description="유형: guideline | announcement"),
     q: str | None = Query(None, description="제목 텍스트 검색"),
     sort_by: str = Query("title", description="정렬: title | latest_date | version_count"),
+    excluded: bool = Query(
+        False, description="true면 수집 제외 처리된 항목만 조회 (기본: 제외 안 된 항목만)"
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """가이드라인/발표 목록 조회."""
@@ -150,6 +165,12 @@ async def list_guidelines(
         select(Guideline)
         .join(Agency, Guideline.agency_id == Agency.id)
         .options(selectinload(Guideline.versions))
+    )
+
+    # 수집 제외 항목은 기본적으로 목록에서 제외한다.
+    stmt = stmt.where(
+        Guideline.excluded_at.is_not(None) if excluded
+        else Guideline.excluded_at.is_(None)
     )
 
     if agency_code:
@@ -196,6 +217,190 @@ async def list_guidelines(
     return items
 
 
+class RuleCandidateOut(BaseModel):
+    """제외 규칙 후보 — 근거(support)와 위험(false_positive)을 함께 노출한다."""
+    id: int
+    pattern: str
+    category: str | None
+    support_count: int
+    false_positive_count: int
+    sample_titles: list[str]
+    status: str
+    reviewed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class ExclusionAnalysisOut(BaseModel):
+    excluded_count: int
+    by_category: dict[str, int]
+    candidates: list[RuleCandidateOut]
+    note: str
+
+
+@router.get("/meta/exclusion-analysis", response_model=ExclusionAnalysisOut)
+async def exclusion_analysis(db: AsyncSession = Depends(get_db)) -> dict:
+    """수동 제외 현황과, 분석이 도출한 필터 규칙 후보.
+
+    후보는 제안일 뿐이며 자동으로 필터에 반영되지 않는다.
+    """
+    counts = (
+        await db.execute(
+            select(Guideline.exclusion_category, func.count(Guideline.id))
+            .where(Guideline.excluded_at.is_not(None))
+            .group_by(Guideline.exclusion_category)
+        )
+    ).all()
+    by_category = {
+        (row[0].value if row[0] is not None else "unspecified"): row[1]
+        for row in counts
+    }
+
+    rows = (
+        await db.execute(
+            select(ExclusionRuleCandidate)
+            .where(ExclusionRuleCandidate.status == RuleCandidateStatus.PENDING)
+            .order_by(
+                ExclusionRuleCandidate.support_count.desc(),
+                ExclusionRuleCandidate.pattern,
+            )
+        )
+    ).scalars().all()
+
+    candidates = [
+        {
+            "id": row.id,
+            "pattern": row.pattern,
+            "category": row.category.value if row.category else None,
+            "support_count": row.support_count,
+            "false_positive_count": row.false_positive_count,
+            "sample_titles": (row.sample_titles or "").splitlines(),
+            "status": row.status.value,
+            "reviewed_at": row.reviewed_at,
+        }
+        for row in rows
+    ]
+
+    return {
+        "excluded_count": sum(by_category.values()),
+        "by_category": by_category,
+        "candidates": candidates,
+        "note": (
+            "후보는 제안일 뿐입니다. 승인해야 필터에 반영되며, "
+            "활성 항목에 하나라도 걸리는(false_positive>0) 패턴은 후보에 오르지 않습니다."
+        ),
+    }
+
+
+@router.post("/meta/exclusion-rules/{candidate_id}/review", response_model=RuleCandidateOut)
+async def review_rule_candidate(
+    candidate_id: int,
+    approve: bool = Query(..., description="true=승인(필터 반영), false=반려"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """규칙 후보를 승인하거나 반려한다."""
+    row = (
+        await db.execute(
+            select(ExclusionRuleCandidate).where(
+                ExclusionRuleCandidate.id == candidate_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="규칙 후보를 찾을 수 없습니다.")
+
+    if approve and row.false_positive_count > 0:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"이 패턴은 활성 항목 {row.false_positive_count}건에도 걸립니다. "
+                "승인하면 정상 문서가 수집에서 사라집니다."
+            ),
+        )
+
+    row.status = (
+        RuleCandidateStatus.APPROVED if approve else RuleCandidateStatus.REJECTED
+    )
+    row.reviewed_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(row)
+
+    return {
+        "id": row.id,
+        "pattern": row.pattern,
+        "category": row.category.value if row.category else None,
+        "support_count": row.support_count,
+        "false_positive_count": row.false_positive_count,
+        "sample_titles": (row.sample_titles or "").splitlines(),
+        "status": row.status.value,
+        "reviewed_at": row.reviewed_at,
+    }
+
+
+class ExcludeIn(BaseModel):
+    """수집 제외 요청."""
+    category: ExclusionCategory
+    note: str | None = None
+
+
+@router.post("/guidelines/{guideline_id}/exclude", response_model=GuidelineOut)
+async def exclude(
+    guideline_id: int,
+    payload: ExcludeIn,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """추적이 불필요한 항목을 수집 제외 처리합니다.
+
+    목록에서 숨기는 동시에 같은 URL의 판정 기록을 남겨 재수집을 막습니다.
+    데이터는 지우지 않으므로 restore 로 되돌릴 수 있습니다.
+    """
+    guideline = await _get_guideline_or_404(db, guideline_id)
+    try:
+        await exclude_guideline(db, guideline, payload.category, payload.note)
+    except ExclusionError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    await db.commit()
+    # commit 으로 인스턴스가 만료된다. 부분 refresh 로 versions 만 되살리면
+    # 나머지 컬럼이 직렬화 시점에 지연 로딩돼 async 컨텍스트 밖 IO(MissingGreenlet)가
+    # 된다 — versions 까지 eager 로 다시 읽는다.
+    return _guideline_dict(await _get_guideline_or_404(db, guideline_id))
+
+
+@router.post("/guidelines/{guideline_id}/restore", response_model=GuidelineOut)
+async def restore(guideline_id: int, db: AsyncSession = Depends(get_db)) -> dict:
+    """수집 제외를 해제합니다."""
+    guideline = await _get_guideline_or_404(db, guideline_id)
+    await restore_guideline(db, guideline)
+    await db.commit()
+    # commit 으로 인스턴스가 만료된다. 부분 refresh 로 versions 만 되살리면
+    # 나머지 컬럼이 직렬화 시점에 지연 로딩돼 async 컨텍스트 밖 IO(MissingGreenlet)가
+    # 된다 — versions 까지 eager 로 다시 읽는다.
+    return _guideline_dict(await _get_guideline_or_404(db, guideline_id))
+
+
+async def _get_guideline_or_404(db: AsyncSession, guideline_id: int) -> Guideline:
+    result = await db.execute(
+        select(Guideline)
+        .where(Guideline.id == guideline_id)
+        .options(selectinload(Guideline.versions))
+    )
+    guideline = result.scalar_one_or_none()
+    if guideline is None:
+        raise HTTPException(status_code=404, detail="가이드라인을 찾을 수 없습니다.")
+    return guideline
+
+
+def _guideline_dict(g: Guideline) -> dict:
+    return {
+        **{c.key: getattr(g, c.key) for c in Guideline.__table__.columns},
+        "latest_published_date": (
+            max((v.published_date for v in g.versions), default=None)
+            if g.versions else None
+        ),
+        "version_count": len(g.versions),
+    }
+
+
 @router.get("/guidelines/recent-changes", response_model=list[RecentChangeOut])
 async def list_recent_changes(
     days: int = Query(30, ge=1, le=365, description="최근 N일 이내"),
@@ -229,6 +434,7 @@ async def list_recent_changes(
         .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
         .join(Agency, Guideline.agency_id == Agency.id)
         .where(GuidelineVersion.published_date >= cutoff)
+        .where(Guideline.excluded_at.is_(None))
         .order_by(GuidelineVersion.published_date.desc())
         .limit(limit)
     )

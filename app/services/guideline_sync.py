@@ -17,6 +17,12 @@ from sqlalchemy.orm import selectinload
 
 from app.crawlers.base import CrawledItem
 from app.models.crawl_decision import CrawlDecision, DecisionOutcome
+from app.services.exclusion_analysis import (
+    load_approved_patterns,
+    load_approved_patterns_sync,
+    matched_approved_pattern,
+)
+from app.services.url_key import normalize_decision_url
 from app.models.guideline import Guideline, GuidelineCategory, GuidelineVersion
 
 logger = logging.getLogger(__name__)
@@ -40,8 +46,13 @@ def _upsert_decision(
     stage: str,
     reason: str | None = None,
 ) -> None:
-    """판정 행을 갱신하거나 새로 만든다. db_add는 db.add 함수."""
-    existing = cache.get(item.url)
+    """판정 행을 갱신하거나 새로 만든다. db_add는 db.add 함수.
+
+    캐시 키는 정규화 URL(세션 토큰 제거) — 같은 게시물이 매 크롤 다른
+    jsessionid 로 들어와도 한 행으로 모인다.
+    """
+    key = normalize_decision_url(item.url) or item.url
+    existing = cache.get(key)
     if existing is not None:
         existing.title = item.title[:500]
         existing.config_label = config_label[:200] if config_label else None
@@ -53,7 +64,7 @@ def _upsert_decision(
     decision = CrawlDecision(
         agency_id=agency_id,
         config_label=config_label[:200] if config_label else None,
-        url=item.url[:1000],
+        url=key[:1000],
         title=item.title[:500],
         outcome=outcome,
         stage=stage,
@@ -61,7 +72,7 @@ def _upsert_decision(
         keyword_matched=item.keyword_matched,
     )
     db_add(decision)
-    cache[item.url] = decision
+    cache[key] = decision
 
 
 # ── 제목 정규화 (버전 매칭용) ────────────────────────────
@@ -465,12 +476,22 @@ async def sync_crawl_results(
 
     # 판정 캐시 로드 (이번 배치의 URL만)
     decision_cache: dict[str, CrawlDecision] = {}
+    # 정규화 전/후 URL이 DB에 섞여 있을 수 있어(과거 행) 양쪽으로 조회한다.
     item_urls = [i.url for i in items if i.url]
-    if item_urls:
+    lookup_urls = {u for u in item_urls} | {
+        normalize_decision_url(u) for u in item_urls if u
+    }
+    if lookup_urls:
         dec_result = await db.execute(
-            select(CrawlDecision).where(CrawlDecision.url.in_(item_urls))
+            select(CrawlDecision).where(CrawlDecision.url.in_(lookup_urls))
         )
-        decision_cache = {d.url: d for d in dec_result.scalars().all()}
+        decision_cache = {
+            normalize_decision_url(d.url) or d.url: d
+            for d in dec_result.scalars().all()
+        }
+
+    # 사람이 승인한 제외 패턴 (승인 전 후보는 포함되지 않는다)
+    approved_patterns = await load_approved_patterns(db)
 
     new_count = 0
     updated_count = 0
@@ -491,7 +512,7 @@ async def sync_crawl_results(
     for item in items:
         # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 재판정 없이 스킵.
         # PENDING은 재판정. ACCEPTED(동일 제목)는 아래에서 LLM 생략에 활용.
-        cached = decision_cache.get(item.url)
+        cached = decision_cache.get(normalize_decision_url(item.url) or item.url)
         cache_hit = cached is not None and cached.title == item.title[:500]
         if cache_hit and cached.outcome == DecisionOutcome.EXCLUDED:
             cached_excluded_count += 1
@@ -514,6 +535,18 @@ async def sync_crawl_results(
                 agency_id=agency_id, config_label=config_label, item=item,
                 outcome=DecisionOutcome.EXCLUDED, stage="it_domain",
                 reason="비IT 도메인 제목",
+            )
+            filtered_count += 1
+            continue
+
+        # 0-1-1) 사람이 승인한 제외 패턴
+        hit = matched_approved_pattern(item.title, approved_patterns)
+        if hit:
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="approved_rule",
+                reason=f"승인된 제외 패턴 '{hit}'",
             )
             filtered_count += 1
             continue
@@ -815,13 +848,20 @@ def sync_crawl_results_sync(
     # 판정 캐시 로드 (이번 배치의 URL만)
     decision_cache: dict[str, CrawlDecision] = {}
     item_urls = [i.url for i in items if i.url]
-    if item_urls:
+    lookup_urls = {u for u in item_urls} | {
+        normalize_decision_url(u) for u in item_urls if u
+    }
+    if lookup_urls:
         rows = (
             db.query(CrawlDecision)
-            .filter(CrawlDecision.url.in_(item_urls))
+            .filter(CrawlDecision.url.in_(lookup_urls))
             .all()
         )
-        decision_cache = {d.url: d for d in rows}
+        decision_cache = {
+            normalize_decision_url(d.url) or d.url: d for d in rows
+        }
+
+    approved_patterns = load_approved_patterns_sync(db)
 
     new_count = updated_count = skipped_count = filtered_count = 0
     pending_count = cached_excluded_count = llm_classified_count = 0
@@ -830,7 +870,7 @@ def sync_crawl_results_sync(
     for item in items:
         # 캐시: 동일 제목으로 이미 EXCLUDED 판정된 URL → 스킵.
         # ACCEPTED(동일 제목)는 재판정 생략에 활용.
-        cached = decision_cache.get(item.url)
+        cached = decision_cache.get(normalize_decision_url(item.url) or item.url)
         cache_hit = cached is not None and cached.title == item.title[:500]
         if cache_hit and cached.outcome == DecisionOutcome.EXCLUDED:
             cached_excluded_count += 1
@@ -852,6 +892,18 @@ def sync_crawl_results_sync(
                 agency_id=agency_id, config_label=config_label, item=item,
                 outcome=DecisionOutcome.EXCLUDED, stage="it_domain",
                 reason="비IT 도메인 제목",
+            )
+            filtered_count += 1
+            continue
+
+        # 사람이 승인한 제외 패턴
+        hit = matched_approved_pattern(item.title, approved_patterns)
+        if hit:
+            _upsert_decision(
+                db.add, decision_cache,
+                agency_id=agency_id, config_label=config_label, item=item,
+                outcome=DecisionOutcome.EXCLUDED, stage="approved_rule",
+                reason=f"승인된 제외 패턴 '{hit}'",
             )
             filtered_count += 1
             continue

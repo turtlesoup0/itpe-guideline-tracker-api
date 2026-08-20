@@ -17,7 +17,7 @@ celery = Celery(
     "guideline-tracker",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.tasks.crawl_tasks"],
+    include=["app.tasks.crawl_tasks", "app.tasks.exclusion_tasks"],
 )
 
 celery.conf.update(
@@ -57,6 +57,12 @@ celery.conf.beat_schedule = {
         "task": "app.tasks.crawl_tasks.crawl_by_schedule",
         "schedule": crontab(hour=1, minute=0, day_of_month=1),  # 1st 01:00 UTC
         "args": ("monthly",),
+    },
+    # ── 매주 일요일 11:00 KST: 수동 제외 항목 분석 → 필터 규칙 후보 갱신 ──
+    # (후보는 저장만 한다. 필터 반영은 사람이 승인한 뒤에만.)
+    "refresh-exclusion-candidates": {
+        "task": "app.tasks.exclusion_tasks.refresh_exclusion_candidates",
+        "schedule": crontab(hour=2, minute=0, day_of_week=0),  # Sun 02:00 UTC
     },
     # ── 매주 수요일 10:00 KST: 법제처 행정규칙 변경 감지 ──
     "check-legal-bases": {

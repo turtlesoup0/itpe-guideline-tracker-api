@@ -62,6 +62,22 @@ class ItemType(str, PyEnum):
     ANNOUNCEMENT = "announcement"    # 가이드라인 발표·공고·보도자료 등
 
 
+class ExclusionCategory(str, PyEnum):
+    """수집 제외 사유 분류.
+
+    자유 텍스트가 아니라 고정 분류로 받는다 — 주기 분석이 사유별로 집계해
+    "무엇이 왜 새어 들어오는지"를 근거로 필터 규칙 후보를 뽑아야 하기 때문.
+    분류를 늘릴 때는 기존 분류로 설명되지 않는 사례가 실제로 쌓인 뒤에 늘린다.
+    """
+    PHYSICAL_SECURITY = "physical_security"  # 물리·시설 보안 (청사 출입, 방호)
+    INTL_AGREEMENT = "intl_agreement"        # 국제협정·MOU·상호인정
+    EDUCATION_PROMO = "education_promo"      # 교육·홍보·행사
+    PLAN_REPORT = "plan_report"              # 계획·실적·결과보고
+    NON_IT = "non_it"                        # 비IT 행정 일반
+    DUPLICATE = "duplicate"                  # 중복 수집
+    OTHER = "other"                          # 기타 (note 필수)
+
+
 # ── LegalBasis (고시/훈령) ───────────────────────────────
 
 
@@ -150,6 +166,21 @@ class Guideline(Base, TimestampMixin):
     duplicate_of_id: Mapped[int | None] = mapped_column(
         ForeignKey("guidelines.id"), nullable=True,
         comment="동일 콘텐츠(PDF 해시 일치)의 원본 가이드라인 id"
+    )
+
+    # 수집 제외 — 추적할 필요가 없다고 사람이 판단한 항목.
+    # 행은 지우지 않는다: 왜 제외됐는지가 필터 규칙을 다듬는 근거이고,
+    # 잘못 제외했을 때 되돌릴 수 있어야 한다.
+    # 제외 시 같은 URL의 crawl_decisions 를 EXCLUDED 로 기록해 재수집을 막는다.
+    excluded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True,
+        comment="수집 제외 처리 시각 (None이면 추적 대상)"
+    )
+    exclusion_category: Mapped[ExclusionCategory | None] = mapped_column(
+        Enum(ExclusionCategory), nullable=True, comment="제외 사유 분류"
+    )
+    exclusion_note: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="제외 사유 메모 (category=other 일 때 필수)"
     )
 
     # Relations

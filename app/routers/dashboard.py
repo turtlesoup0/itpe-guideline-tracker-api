@@ -103,6 +103,7 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     # ── 기관별 가이드라인 수 ──
     gl_counts_result = await db.execute(
         select(Guideline.agency_id, func.count(Guideline.id))
+        .where(Guideline.excluded_at.is_(None))
         .group_by(Guideline.agency_id)
     )
     gl_count_map: dict[int, int] = dict(gl_counts_result.all())
@@ -111,10 +112,14 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     from app.models.guideline import ItemType
     total_lb = await db.execute(select(func.count(LegalBasis.id)))
     total_gl = await db.execute(
-        select(func.count(Guideline.id)).where(Guideline.item_type == ItemType.GUIDELINE)
+        select(func.count(Guideline.id))
+        .where(Guideline.item_type == ItemType.GUIDELINE)
+        .where(Guideline.excluded_at.is_(None))
     )
     total_ann = await db.execute(
-        select(func.count(Guideline.id)).where(Guideline.item_type == ItemType.ANNOUNCEMENT)
+        select(func.count(Guideline.id))
+        .where(Guideline.item_type == ItemType.ANNOUNCEMENT)
+        .where(Guideline.excluded_at.is_(None))
     )
 
     # 유형별 법적 근거 수
@@ -131,7 +136,9 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     cutoff_30d = date_cls.today() - timedelta(days=30)
     recent_update_result = await db.execute(
         select(func.count(func.distinct(GuidelineVersion.guideline_id)))
+        .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
         .where(GuidelineVersion.published_date >= cutoff_30d)
+        .where(Guideline.excluded_at.is_(None))
     )
     recently_updated_count = recent_update_result.scalar() or 0
 
@@ -180,6 +187,7 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
         select(GuidelineVersion, Guideline.title, Agency.short_name)
         .join(Guideline, GuidelineVersion.guideline_id == Guideline.id)
         .join(Agency, Guideline.agency_id == Agency.id)
+        .where(Guideline.excluded_at.is_(None))
         .order_by(GuidelineVersion.detected_at.desc())
         .limit(10)
     )
@@ -280,6 +288,7 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db)) -> dict:
     # ── 카테고리별 가이드라인 분포 ──
     cat_result = await db.execute(
         select(Guideline.category, func.count(Guideline.id))
+        .where(Guideline.excluded_at.is_(None))
         .group_by(Guideline.category)
     )
     category_stats = {row[0].value: row[1] for row in cat_result.all()}
