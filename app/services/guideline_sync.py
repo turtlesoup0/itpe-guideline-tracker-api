@@ -100,6 +100,15 @@ _NOISE_PATTERN = re.compile(
 _PAREN_SUFFIX = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
 
 
+def _url_key(url: str) -> str:
+    """수집 URL 비교 키 — 세션 토큰·목록 맥락 파라미터(curPage 등)를 벗긴다.
+
+    목록에서 뽑은 게시물 링크는 그 글이 몇 페이지에 있었는지에 따라 달라진다.
+    원문 URL로 비교하면 글이 다음 페이지로 밀리는 순간 같은 글을 못 알아본다.
+    """
+    return normalize_decision_url(url) or url
+
+
 def normalize_title(title: str) -> str:
     """비교용 제목 정규화.
 
@@ -143,6 +152,10 @@ def _find_pdf_url(attachment_urls: list[str]) -> str | None:
     return attachment_urls[0] if attachment_urls else None
 
 
+# 경로형 게시물 URL: 금융위 게시판 코드(no010101, po040200 등) + 게시물 번호
+_PATH_POST_ID_RE = re.compile(r"//(?:www\.)?fsc\.go\.kr/([a-z]{2}\d{6})/(\d+)(?:[/?#]|$)")
+
+
 def content_fingerprint(pdf_url: str | None, source_url: str | None) -> str | None:
     """문서 콘텐츠 식별자(fingerprint) 추출.
 
@@ -152,7 +165,8 @@ def content_fingerprint(pdf_url: str | None, source_url: str | None) -> str | No
     우선순위:
     1. KOSA(sw.or.kr) cfIdx — 파일 고유 ID
     2. 법제처/일반 게시판 seq / nttNo / bbsNo 등 게시물 ID
-    3. 그 외: PDF URL 자체 (쿼리스트링 제외)
+    3. 경로형 게시물 번호 (금융위 /no010101/88133)
+    4. 그 외: PDF URL 자체 (쿼리스트링 제외)
     """
     for u in (pdf_url, source_url):
         if not u:
@@ -168,6 +182,12 @@ def content_fingerprint(pdf_url: str | None, source_url: str | None) -> str | No
         m = re.search(r"(?:seq|nttNo|bbsNo|fileSeq|fileNo)=(\d+)", u)
         if m:
             return f"seq:{m.group(1)}"
+    # 경로에 게시물 번호가 들어가는 게시판 (금융위: /no010101/88133?…)
+    # 쿼리 파라미터가 없어 위 패턴에 안 걸리고, 날짜 fallback 으로 새 버전이 쌓였다.
+    if source_url:
+        m = _PATH_POST_ID_RE.search(source_url)
+        if m:
+            return f"path:{m.group(1)}/{m.group(2)}"
     # fallback: PDF URL의 path 부분 (쿼리 제거)
     if pdf_url:
         return "url:" + pdf_url.split("?")[0]
@@ -443,7 +463,7 @@ async def sync_crawl_results(
 
     # 인덱스 구축
     url_index: dict[str, Guideline] = {
-        g.source_url: g for g in existing_guidelines if g.source_url
+        _url_key(g.source_url): g for g in existing_guidelines if g.source_url
     }
     # title → (guideline, set of published_dates, set of content fingerprints)
     title_index: dict[str, tuple[Guideline, set[date], set[str]]] = {}
@@ -521,8 +541,8 @@ async def sync_crawl_results(
 
         # 0) URL이 이미 수집돼 있으면 재분류 없이 item_type만 정정 후 스킵.
         # (분류보다 먼저 — 수집 완료 항목에 LLM을 재호출할 이유가 없다)
-        if item.url in url_index:
-            existing = url_index[item.url]
+        if _url_key(item.url) in url_index:
+            existing = url_index[_url_key(item.url)]
             if existing.item_type != target_type:
                 existing.item_type = target_type
             skipped_count += 1
@@ -719,7 +739,7 @@ async def sync_crawl_results(
             if existing.item_type != target_type:
                 existing.item_type = target_type
             # 인덱스 갱신
-            url_index[item.url] = existing
+            url_index[_url_key(item.url)] = existing
             existing_dates.add(pub_date)
             if new_fp:
                 existing_fps.add(new_fp)
@@ -760,7 +780,7 @@ async def sync_crawl_results(
         db.add(first_version)
 
         # 인덱스 갱신
-        url_index[item.url] = guideline
+        url_index[_url_key(item.url)] = guideline
         _new_fp = content_fingerprint(pdf_url, item.url)
         title_index[norm_title] = (
             guideline, {pub_date}, {_new_fp} if _new_fp else set(),
@@ -822,7 +842,9 @@ def sync_crawl_results_sync(
     # 기존 Guideline 조회 (agency_id로 필터)
     existing = db.query(Guideline).filter(Guideline.agency_id == agency_id).all()
 
-    url_index: dict[str, Guideline] = {g.source_url: g for g in existing if g.source_url}
+    url_index: dict[str, Guideline] = {
+        _url_key(g.source_url): g for g in existing if g.source_url
+    }
     title_index: dict[str, tuple[Guideline, set, set]] = {}
     gid_entry_index: dict[int, tuple[Guideline, set, set]] = {}
     for g in existing:
@@ -878,8 +900,8 @@ def sync_crawl_results_sync(
         pre_accepted = cache_hit and cached.outcome == DecisionOutcome.ACCEPTED
 
         # URL이 이미 수집돼 있으면 재분류 없이 item_type만 정정 후 스킵
-        if item.url in url_index:
-            ex = url_index[item.url]
+        if _url_key(item.url) in url_index:
+            ex = url_index[_url_key(item.url)]
             if ex.item_type != target_type:
                 ex.item_type = target_type
             skipped_count += 1
@@ -1032,7 +1054,7 @@ def sync_crawl_results_sync(
             db.add(v)
             if ex.item_type != target_type:
                 ex.item_type = target_type
-            url_index[item.url] = ex
+            url_index[_url_key(item.url)] = ex
             dates.add(pub_date)
             if new_fp:
                 fps.add(new_fp)
@@ -1058,7 +1080,7 @@ def sync_crawl_results_sync(
             detected_at=datetime.now(),
         )
         db.add(v)
-        url_index[item.url] = g
+        url_index[_url_key(item.url)] = g
         _new_fp = content_fingerprint(pdf_url, item.url)
         title_index[norm] = (g, {pub_date}, {_new_fp} if _new_fp else set())
         gid_entry_index[g.id] = title_index[norm]
