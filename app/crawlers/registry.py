@@ -257,6 +257,8 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="daily",
                 list_selector=".board-list-wrap > ul > li",
                 title_selector=".subject a",
+                # ul/li 구조라 td 기반 날짜 탐색이 안 된다 → 명시 (없으면 크롤일로 저장됨)
+                date_selector=".day",
                 pagination_param="curPage",
                 keyword_filter=ANNOUNCEMENT_KEYWORDS + ["전자금융", "금융보안", "핀테크"],
             item_type="announcement",
@@ -268,6 +270,7 @@ AGENCY_SEEDS: list[AgencySeed] = [
                 schedule="weekly",
                 list_selector=".board-list-wrap > ul > li",
                 title_selector=".subject a",
+                date_selector=".day",
                 pagination_param="curPage",
                 max_pages=5,
                 keyword_filter=ANNOUNCEMENT_KEYWORDS,

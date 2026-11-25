@@ -30,6 +30,16 @@ _VOLATILE_QUERY_KEYS = {
     "_",
     "timestamp",
     "cachebuster",
+    # 목록 화면 맥락 파라미터 — 게시물 링크에 "어느 목록 페이지에서 눌렀는지"가
+    # 따라붙는다(금융위: …/no010101/88133?srchCtgry=&curPage=2&…). 새 글이 올라와
+    # 게시물이 다음 페이지로 밀리면 curPage 만 바뀌어 같은 글이 새 URL로 보인다.
+    # 게시물 식별자는 경로(/88133)에 있으므로 지워도 다른 글과 섞이지 않는다.
+    "curpage",
+    "srchctgry",
+    "srchkey",
+    "srchtext",
+    "srchbegindt",
+    "srchenddt",
 }
 
 
